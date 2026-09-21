@@ -89,8 +89,9 @@ jobs:
 
           PAGES_REQUESTED = 3
           # 12 products per page, so three pages is 36. The floor is set
-          # below that rather than tracking it; the category itself reported
-          # 203 products on 2026-09-21.
+          # below that rather than tracking it; the category itself paged
+          # through 50 products on 2026-09-21 (its `totalCount` of 203 is
+          # the count of SIZE VARIANTS across those rows, not products).
           MIN_PRODUCTS = 30
 
           rows = json.loads(Path("canary_run.json").read_text())
@@ -105,12 +106,15 @@ jobs:
               fail.append(f"stopped after {meta.get('pages_completed')} of "
                           f"{PAGES_REQUESTED} pages (stop_reason="
                           f"{meta.get('stop_reason')!r})")
-          # The check the whole --pages 3 exists for.
-          if meta.get("total_results", 0) < 50:
-              fail.append(f"the category reports only "
-                          f"{meta.get('total_results')} products in total — "
-                          f"either the catalogue shrank or the categoryId "
-                          f"read off the page is no longer the right one")
+          # The check the whole --pages 3 exists for. 50 on 2026-09-21, so
+          # the floor sits below it: a catalogue that loses a model is not a
+          # failure, a categoryId that points somewhere else is.
+          if meta.get("total_results", 0) < 40:
+              fail.append(f"the category pages through only "
+                          f"{meta.get('total_results')} products — either the "
+                          f"catalogue shrank far more than a model or two, or "
+                          f"the categoryId read off the page is no longer the "
+                          f"right one")
           if len({r["sku"] for r in rows}) != len(rows):
               fail.append("duplicate skus across pages")
           if len({(r["page"], r["position"]) for r in rows}) != len(rows):
