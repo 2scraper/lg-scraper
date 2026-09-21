@@ -26,9 +26,10 @@ own catalogue API.
          <input name="bizType" value="B2C">  <input name="filterFlag" value="Y">
 
    A plain POST with those fields returns JSON: 12 products per page, 265
-   fields each, and `totalCount` — 203 for RU televisions on 2026-09-21. No
-   browser, no key. That is the primary path, and `parse_catalog_form()`
-   reads the parameters out of the page rather than hardcoding them.
+   fields each, and a `pageInfo` block — 50 products in 5 pages for RU
+   televisions on 2026-09-21. No browser, no key. That is the primary path,
+   and `parse_catalog_form()` reads the parameters out of the page rather
+   than hardcoding them. Mind the two counts: see `api_row_count()`.
 
 3. **`?page=N` on the category URL works too**, and the browser engines use
    it: pages 1, 2 and 3 each served a different set of grid models.
@@ -72,10 +73,9 @@ own catalogue API.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
@@ -163,6 +163,19 @@ def detect_bot_challenge(html: str) -> Optional[str]:
 def asset_reference_count(html: str) -> int:
     """How many times the response references LG's own asset paths."""
     return len(_ASSET_REFERENCE_RE.findall(html))
+
+
+# The machinery a category page carries whether or not it holds products:
+# measured once each on a good /ru/televisions page AND on page 99, which is
+# past the end of that category and holds no cards at all. A response with
+# the assets but NONE of this is the shell, still to paint — that difference
+# is what keeps a slow render from being reported as an empty category.
+_CATEGORY_MACHINERY = ("categoryFilterForm", "product-list-box")
+
+
+def has_category_machinery(html: str) -> bool:
+    """Whether the response carries the category grid's own machinery."""
+    return any(marker in html for marker in _CATEGORY_MACHINERY)
 
 
 def count_cards(html: str) -> int:
@@ -299,13 +312,50 @@ def catalog_payload(form: Dict[str, object], page_num: int) -> Dict[str, str]:
     return params
 
 
-def api_total_count(payload: dict) -> Optional[int]:
-    """The site's own match count for this category, or None.
+def _page_info(payload: dict) -> dict:
+    """The API's own pagination block, or {}."""
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        return {}
+    info = data[0].get("pageInfo")
+    return info if isinstance(info, dict) else {}
 
-    `totalCount` sits beside the product list — 203 for RU televisions on
-    2026-09-21 — which makes "did this page bring back everything it should?"
-    arithmetic rather than a threshold. Note `dataCount` at the top level is
-    the number of data blocks (always 1), not a product count.
+
+def api_row_count(payload: dict) -> Optional[int]:
+    """How many products this category pages through, or None.
+
+    This is `pageInfo.totalCount`, and it is the number that answers "did the
+    run get everything?" — 50 for RU televisions and 41 for UA televisions on
+    2026-09-21, matching the rows the API actually hands out.
+
+    NOT `totalCount` beside the product list, which is a different number:
+    203 for the same RU category, and measured to be the count of SIZE
+    VARIANTS across those 50 model groups (the sum of each row's
+    `sibling_sizes`, exactly 203). Reading that one as the product count made
+    every complete run look like it had lost three quarters of the catalogue.
+    """
+    total = _page_info(payload).get("totalCount")
+    return total if isinstance(total, int) else None
+
+
+def api_page_count(payload: dict) -> Optional[int]:
+    """How many pages the API says this category has, or None.
+
+    `pageInfo.pageCount`: 5 for RU televisions, 4 for UA. Past the end the
+    block collapses to `{"view": "N", "pageCount": 0}`, which describes that
+    response rather than the category — so a 0 here is read as "unknown",
+    never as "no pages".
+    """
+    count = _page_info(payload).get("pageCount")
+    return count if isinstance(count, int) and count > 0 else None
+
+
+def api_variant_count(payload: dict) -> Optional[int]:
+    """The site's count of size variants in this category, or None.
+
+    `totalCount` beside the product list. Kept because it is the number the
+    site itself shows, and `sibling_sizes` on the rows adds up to exactly it
+    — but it is not a product count, and nothing paginates by it.
     """
     data = payload.get("data")
     if not isinstance(data, list) or not data:
@@ -517,6 +567,13 @@ def _row_from_card(card, base_url: str, category: Optional[str],
     # `active`/aria-checked. Taking the first link instead reported an 85"
     # card as the 65" model on the very first real page — the sizes are
     # listed largest-first, not current-first.
+    # Two columns the API fills and the card carries too, measured identical
+    # on all 12 cards of /ru/televisions?page=2 on 2026-09-21. Left null
+    # before that, which read as "the site does not publish this" when the
+    # site publishes it on every card.
+    where_to_buy = card.select_one("a.where-to-buy")
+    where_to_buy_url = where_to_buy.get("href") if where_to_buy else None
+
     sizes = [_clean(a.get_text()) for a in card.select(".model-group a")]
     sizes = [s for s in sizes if s]
     active = card.select_one('.model-group a.active, .model-group a[aria-checked="true"]')
@@ -544,6 +601,9 @@ def _row_from_card(card, base_url: str, category: Optional[str],
         review_count=_int(_card_attr(card, "data-model-reviewcnt")) or 0,
         image_url=(urljoin(base_url, _itemprop(card, "image"))
                    if _itemprop(card, "image") else None),
+        super_category=_card_attr(card, "data-super-category-name"),
+        where_to_buy_url=(urljoin(base_url, where_to_buy_url)
+                          if where_to_buy_url else None),
     )
 
 

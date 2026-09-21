@@ -48,7 +48,8 @@ import requests
 import env_config
 import page_flow
 from output_writer import dedupe_by_sku, finish_run
-from product_parser import (api_products, api_total_count, catalog_payload,
+from product_parser import (api_page_count, api_products, api_row_count,
+                            api_variant_count, catalog_payload,
                             category_from_url, declared_currency, page_url,
                             parse_catalog_form, rows_from_api,
                             unsupported_locale_reason)
@@ -154,11 +155,20 @@ def scrape(args) -> int:
     all_rows: List = []
     seen = set()
     total_results = None
+    page_count = None
     stop_reason = "completed"
     pages_completed = 0
     pages_failed: List[int] = []
 
     for page_num in range(1, args.pages + 1):
+        if page_count is not None and page_num > page_count:
+            # The API told us on page 1 how many pages it has. Asking for one
+            # past that returns an empty page, which is a request spent to
+            # learn something already known.
+            logger.info("The category has %d page(s); stopping there rather "
+                        "than asking for page %d.", page_count, page_num)
+            stop_reason = "listing_exhausted"
+            break
         if page_num > 1:
             time.sleep(args.delay)
         payload = None
@@ -179,13 +189,34 @@ def scrape(args) -> int:
 
         records = api_products(payload)
         if page_num == 1:
-            total_results = api_total_count(payload)
-            logger.info("The category reports %s product(s) in total.",
-                        total_results)
+            total_results = api_row_count(payload)
+            page_count = api_page_count(payload)
+            variants = api_variant_count(payload)
+            # Two different numbers, and only the first one is a product
+            # count: `pageInfo.totalCount` is what the API pages through,
+            # while the `totalCount` beside the product list counts size
+            # variants across those rows (measured: the sibling sizes of the
+            # 50 RU television rows add up to exactly its 203).
+            logger.info("The category pages through %s product(s) in %s "
+                        "page(s)%s.", total_results, page_count,
+                        f" — {variants} size variants across them"
+                        if variants else "")
         state = page_flow.classify("", url=args.url, page_num=page_num,
                                    record_count=len(records),
                                    total_results=total_results)
         logger.info("Page %d is %s.", page_num, state)
+        if state.policy.blocked:
+            # Not reachable from an empty payload — page_flow answers a JSON
+            # caller on the record count alone. It is reachable if the API
+            # ever starts answering with a refusal the parser can read, and
+            # a run that stops on one is partial, never "complete, no more
+            # products".
+            logger.error("Page %d came back blocked (%s) — stopping here "
+                         "rather than reporting the run as finished.",
+                         page_num, state.reason)
+            pages_failed.append(page_num)
+            stop_reason = f"blocked_{state.vendor}"
+            break
         if args.dump_html:
             path = (args.dump_html if args.pages == 1
                     else f"{args.dump_html}.page{page_num}")

@@ -90,8 +90,12 @@ call.** In the served HTML:
 ```
 
 A plain POST with those fields returns JSON: **12 products per page, 265
-fields each, and the category's own `totalCount`** (203 for RU televisions on
-2026-09-21). No browser, no key, no proxy.
+fields each, and the category's own pagination block**. Two counts come back
+and only one of them is a product count: `pageInfo.totalCount` is what the
+API pages through (50 products in 5 pages for RU televisions, 41 in 4 for
+UA, on 2026-09-21), while the `totalCount` beside the product list counts
+size variants across those rows — 203 for the same RU category, and exactly
+the sum of every row's `sibling_sizes`. No browser, no key, no proxy.
 
 1. **Primary path — that API** (`catalog_client.py`). The parameters are read
    off the page every run, never hardcoded: `categoryId` differs per category
@@ -100,9 +104,23 @@ fields each, and the category's own `totalCount`** (203 for RU televisions on
 2. **Fallback path — the rendered grid**, for the browser engines. Each card
    carries schema.org **microdata** (`itemprop` name/image/priceCurrency) and
    the site's own `data-model-*` attributes. Both beat matching a CSS class.
-3. `price_source` on every row says which produced it. Verified on real
-   captures: the two paths return **the same products and agree on every
-   shared column**.
+3. `price_source` on every row says which produced it. Compared live on
+   2026-09-21, pages 1–2 of `/ru/televisions`: **the two paths return the
+   same 24 products, in the same order, and agree on every column the card
+   carries.** Where they do not agree, the card simply does not carry the
+   fact, and the row says so with a null rather than a guess:
+
+   | Column | API | Rendered grid |
+   |---|---|---|
+   | `product_category` | `Телевизоры` | the card publishes `TV`, a different vocabulary — not written |
+   | `product_category_slug` | `televisions` | not on the card (the run's `--category` holds it) |
+   | `status` | `ACTIVE` | only on the filter form, per category, not per card |
+   | `screen_size` | every row | null on the 4 of 24 cards with no size switcher, which is the card's only size evidence |
+
+   One row disagreed outright: the card for `85QNED93A6A` marks **86"**
+   active in its own size switcher while the API reports `inchCode: 85`.
+   The site contradicts itself there; each path reports what it was given,
+   and `price_source` says which one a row came from.
 
 There is no JSON-LD anywhere on this platform — zero blocks on every `/ru`
 and `/ua` capture — so a JSON-LD-first parser, which is the family default,
@@ -207,13 +225,31 @@ cost the most time:
   success.** It is read off the page instead.
 * **`lg.com/uk` and `lg.com/us` are different platforms.** Refused with the
   reason rather than returning nothing.
+* **A JSON payload carries no HTML evidence.** The "was this built out of
+  LG's own assets?" test is what catches an interstitial, and a catalogue-API
+  answer passes none of it — so an empty API page must be judged on the
+  record count alone, or every exhausted category reads as a block.
+* **An empty grid is not always an empty category.** A served page carries
+  `categoryFilterForm` and `product-list-box` whether or not it holds a
+  product (measured on a good page and on page 99, which holds none). A
+  response with the site's assets but neither of those has not painted the
+  grid yet — the engines wait and read again instead of reporting exit 4.
 
 ## Testing
 
 ```bash
-python3 smoke_test.py      # 309 checks, no network, ~2s
+python3 smoke_test.py      # 346 checks, no network, ~3s
 pytest -q                  # the same run, through the pytest entry point
 ```
+
+The suite drives `catalog_client.py` — the engine that actually ships — end
+to end with only the two HTTP calls stubbed: the form is read off the page
+fixture, the payload is built from it, pages are classified, rows are parsed
+and deduped, and `finish_run` decides the exit code. The cases pinned there
+are a complete run, a category that runs out, a page that repeats the
+previous one, a refusal, a page with no form, a page lost mid-run (exit 6,
+with the failing page named in the sidecar) and a category page that never
+loaded.
 
 ## Licence
 

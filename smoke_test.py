@@ -47,6 +47,7 @@ import sys
 import tempfile
 from contextlib import redirect_stdout
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import page_flow
 import product_parser
@@ -54,6 +55,7 @@ import proxy_pool
 import env_config
 import output_writer
 import captcha_solver
+import catalog_client
 from output_writer import (EXIT_BLOCKED, EXIT_NO_PRODUCTS, EXIT_PARTIAL, Product,
                            dedupe_by_sku, finish_run, save, write_csv)
 from product_parser import (category_from_url, page_url, parse_products)
@@ -914,7 +916,7 @@ PAGE_FIXTURE_HTML = r"""<!DOCTYPE html><html><head><title>Телевизоры L
 </div>
 </div></div></div></div></body></html>"""
 
-API_FIXTURE_JSON = r"""{"data": [{"totalCount": 203, "productList": [{"modelId": "MD07610675", "modelName": "OLED83W69LA", "inchCode": "83", "modelStatusCode": "ACTIVE", "msrp": 0.0, "promotionPrice": 0.0, "obsProductUrl": null, "obsOriginalPrice": 0.0, "obsSellingPrice": 0.0, "obsCurrency": null, "obsInventoryFlag": null, "obsProductCount": 0, "obsSellFlag": null, "resellerBtnFlag": "N", "resellerLinkUrl": "", "discountedRate": null, "rDiscountedPrice": null, "rDiscountedPriceCent": null, "rPrice": null, "rPriceCent": null, "rPromoPrice": null, "rPromoPriceCent": null, "addToCartFlag": "N", "findTheDealerFlag": "N", "whereToBuyFlag": "Y", "wtbExternalLinkUseFlag": "N", "wtbExternalLinkName": "", "wtbExternalLinkUrl": "", "wtbExternalLinkSelfFlag": "Y", "inquiryToBuyFlag": "N", "productSupportFlag": "N", "buyNowFlag": "N", "categoryId": "CT20206007", "modelUrlPath": "/ru/televisions/lg-oled83w69la", "categoryName": "Телевизоры", "reviewRating": "0", "reviewRatingStar": "0", "reviewRatingStar2": "0.0", "reviewRatingPercent": "0", "reStockAlertFlag": "N", "reStockAlertUrl": "", "modelRollingImgList": "/ru/images/televisions/md07610675/md07610675-350x350.jpg,/ru/images/televisions/md07610675/thumbnail/350-1.jpg,/ru/images/televisions/md07610675/thumbnail/350-2.jpg,/ru/images/televisions/md07610675/thumbnail/350-3.jpg,/ru/images/televisions/md07610675/thumbnail/350-4.jpg,/ru/images/televisions/md07610675/thumbnail/350-5.jpg", "smallModelRollingImgList": "/ru/images/televisions/md07610675/md07610675-260x260.jpg,/ru/images/televisions/md07610675/thumbnail/260-1.jpg,/ru/images/televisions/md07610675/thumbnail/260-2.jpg,/ru/images/televisions/md07610675/thumbnail/260-3.jpg,/ru/images/televisions/md07610675/thumbnail/260-4.jpg,/ru/images/televisions/md07610675/thumbnail/260-5.jpg", "sortBy": null, "siblingGroupCode": "W69LA_RU", "siblingCode": "83", "defaultSiblingModelFlag": "Y", "plpHighlightModelFlag": "Y", "siblingLocalValue": "83\"", "target": "NEW", "siblingType": "SIZE", "totalCount": 203, "promotionTotalCount": 0, "totalSize": 50, "bizType": "B2C", "wtbUseFlag": "Y", "userFriendlyName": "83-дюймовый телевизор Smart TV Wallpaper TV LG OLED evo AI W6 4K 2026 года", "mediumImageAddr": "/ru/images/televisions/md07610675/md07610675-350x350.jpg", "smallImageAddr": "/ru/images/televisions/md07610675/md07610675-260x260.jpg", "imageAltText": "Вид спереди на телевизор LG OLED evo AI W6 Wallpaper TV, выпущенный в 2026 году, демонстрирует элегантный дизайн Wallpaper, а динамичная абстрактная композиция волнообразных градиентов ярких цветов пл", "defaultProductTag": "Новинка", "productTag1": "Новинка", "productTag2": "", "productTag1UserType": "ALL", "productTag2UserType": "", "preOrderTagEnableFlag": null, "obsComTagShowFlag": "N", "productTag1Type": "COM", "productTag2Type": "COM", "whereToBuyUrl": "/ru/televisions/lg-oled83w69la#pdp_where", "findTheDealerUrl": null, "inquiryToBuyUrl": null, "retailerPricingFlag": "N", "retailerPricingText": "Смотреть ритейлеров для ценообразования", "siblingModels": [{"modelName": "OLED83W69LA", "siblingCode": "83", "siblingValue": "83\"", "modelId": "MD07610675"}, {"modelName": "OLED77W69LA", "siblingCode": "77", "siblingValue": "77\"", "modelId": "MD08807920"}], "promotionText": null, "modelType": "G", "bundlePlpDisplayFlag": "Y", "obsTotalCount": 0, "bundlesTotalCount": 0, "salesModelCode": "OLED83W69LA", "salesSuffixCode": "ARUG", "energyLabel": null, "energyLabelFileName": null, "energyLabelOriginalName": null, "productFicheFileName": null, "productFicheOriginalName": null, "energyLabelDocId": null, "productFicheDocId": null, "energyLabelImageAddr": null, "energyLabelName": null, "energyLabelCategory": null, "reviewType": null, "productMessages": null, "productSupportUrl": null, "buyNowUrl": "", "discountMsg": null, "ecommerceTarget": "_blank", "releaseYear": null, "releaseDate": null, "obsLoginFlag": "N", "buyNowUseFlag": null, "promotionLinkUrl": null, "externalLinkTarget": null, "obsVipPrice": null, "vipPriceFlag": "N", "obsVipTotalCount": 0, "obsBuynowFlag": "", "labelIconMap": [{"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD07610675", "linkUrl": "", "shortDesc": "Благодаря толщине всего 9 мм дизайн Wallpaper привносит эстетичность в окружающее пространство", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "1"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD07610675", "linkUrl": "", "shortDesc": "Технология беспроводной передачи данных 4K 165 Гц для безупречного качества изображения", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "2"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD07610675", "linkUrl": "", "shortDesc": "Технология сверхсияющего цвета в телевизорах LG OLED нового поколения для нового уровня качества изображения", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "3"}], "whiteSpaceMap": [], "signatureFlag": "N", "thinqFlag": "N", "modelBrand": null, "tagContentAreaYn": "Y", "modelBrandAreaYn": "N", "siblingAreaYn": "Y", "reviewAreaYn": "N", "promotionAreaYn": "N", "priceAreaYn": "N", "energyFicheAreaYn": "N", "btnAreaYn": "T", "specMsgFlagAreaYn": "N", "obsLimitSale": "N", "limitSaleUseFlag": "N", "limitSaleTitle": "Продажа ограниченным количеством", "limitSaleAreaYn": "N", "buName1": "MS", "buName2": "TV", "buName3": "QNED_TV", "superCategoryName": "tv-audio-video", "categoryEngName": "televisions", "wishTotalCnt": "0", "myWishCnt": "N", "domain": null, "fEnergyLabelDocId": null, "fEnergyLabelFileName": null, "fEnergyLabelOriginalName": null, "obsPreOrderEnableFlag": null, "obsPreOrderInventoryFlag": null, "obsPreOrderStartDate": null, "obsPreOrderEndDate": null, "obsPreOrderValidDateFlag": "N", "obsPreOrderTotalPreQuantity": null, "obsPreOrderSalablePreQuantity": null, "obsPreOrderFlag": "N", "obsPreOrderRSAFlag": "N", "obsInstallmentFee": null, "obsInstallmentMonth": null, "obsInstallmentPrice": null, "obsInstallmentTan": null, "obsInstallmentTaeg": null, "obsInstallmentTotalPrice": null, "emiMsg": "", "emiMsgAreaYn": "N", "emiPopupUrl": "", "obsEmiMsgFlag": "N", "modelYear": "2026", "specMsgFlag": null, "obsMembershipPrice": 0.0, "rMembershipPrice": null, "rMembershipPriceCent": null, "membershipDisplayFlag": "N", "starRatingValue": null, "participantCount": null, "starRatingPercent": null, "obsCheaperPrice": 0.0, "cheaperPrice": null, "cheaperPriceCent": null, "cheaperPriceFlag": "N", "lowestPriceFlag": null, "obsLowestPriceFlag": "N", "obsLowestPrice": null, "obsLowestPriceCent": null, "obsVipLowestPriceFlag": "N", "obsVipLowestPrice": null, "obsVipLowestPriceCent": null, "afterPay": "0", "obsInstallmentMemberPrice": null, "obsInstallmentMemberMonth": null, "obsInstallmentMemberFee": null, "obsInstallmentMemberTan": null, "obsInstallmentMemberTaeg": null, "obsInstallmentMemberTotalPrice": null, "emiMemberMsg": "", "recommendedRetailRriceInfo": null, "obsMembershipLinkUseFlag": "N", "obsMembershipLinkUrl": "", "obsMembershipLinkTarget": "", "obsPreOrderCount": 0, "obsPartnerUrl": "", "buyNowUnionStoreBtnFlag": "N", "obsZipPayMsg": null, "pdrCompareUseFlag": "Y", "obsLeadTimeFlag": "N", "obsLeadTimeMin": "", "obsLeadTimeMax": "", "promotionTagTextFlag": "N", "promotionTagText": "Extra coupon alleen voor leden", "secondEnergyLabel": null, "secondEnergyLabelFileName": null, "secondEnergyLabelOriginalName": null, "secondProductFicheFileName": null, "secondProductFicheOriginalName": null, "secondEnergyLabelDocId": null, "secondProductFicheDocId": null, "secondEnergyLabelImageAddr": null, "secondEnergyLabelName": null, "secondEnergyLabelCategory": null, "washTowerFlag": "N", "secondFEnergyLabelDocId": null, "secondFEnergyLabelFileName": null, "secondFEnergyLabelOriginalName": null, "energyLabelproductLeve1Code": null, "fenergyLabelproductLeve1Code": null, "productFicheproductLeve1Code": null, "secondEnergyLabelproductLeve1Code": null, "secondFEnergyLabelproductLeve1Code": null, "secondProductFicheproductLeve1Code": null, "firstLabelCheckFlag": null, "obsInstallmentCashback1": null, "obsInstallmentCashback2": null, "obsInstallmentMemberCashback1": "", "obsInstallmentMemberCashback2": "", "userGroup": null, "obsInstallmentInterestFlag": null, "labelRepairMap": [], "repairModelAreaYn": "N", "productTag1ColorFlag": "N", "productTag2ColorFlag": "N", "docTypeCodeFlag": "", "hideInstallationMessageFlag": "N", "obsInsatllationDisplayFlag": null, "obsSubscriptionEnableFlag": null, "obsSubscriptionStatus": null, "obsSubscriptionMaxMonth": null, "obsSubscriptionMonthlyCost": 0.0, "obsSubscriptionDisclaimer": null, "obsSubscriptionLandingPageUrl": null, "obsSubscriptionCtaLinkTarget": "", "obsConvertSubscriptionMonthlyCost": "", "obsConvertSubscriptionMonthlyCostCent": "", "exchanageOfferFlag": null, "guestPriceMessage": null, "guestPriceMessageUseFlag": null, "obsWelcomePriceUseFlag": "N", "obsWelcomePrice": "", "obsWelcomePriceCent": "", "obsWelcomePriceDescription": "", "pisDocType": null, "pisDocOldFlag": null, "secondPisDocType": null, "secondPfCode": null, "elType": null, "secondElType": null, "b2cPriceOnVipGroupsUseFlag": "N", "epsDocType": null, "epsPictoFlag": "N", "includeChargerYn": null, "minPower": null, "maxPower": null, "usbPdYn": null, "energyLabelUpperTextUseFlag": "N", "energyLabelUpperText": null, "localeCode": "RU", "tempdata": 0}, {"modelId": "MD09003547", "modelName": "55NU800B6LA", "inchCode": "55", "modelStatusCode": "ACTIVE", "msrp": 0.0, "promotionPrice": 0.0, "obsProductUrl": null, "obsOriginalPrice": 0.0, "obsSellingPrice": 0.0, "obsCurrency": null, "obsInventoryFlag": null, "obsProductCount": 0, "obsSellFlag": null, "resellerBtnFlag": "N", "resellerLinkUrl": "", "discountedRate": null, "rDiscountedPrice": null, "rDiscountedPriceCent": null, "rPrice": null, "rPriceCent": null, "rPromoPrice": null, "rPromoPriceCent": null, "addToCartFlag": "N", "findTheDealerFlag": "N", "whereToBuyFlag": "Y", "wtbExternalLinkUseFlag": "N", "wtbExternalLinkName": "", "wtbExternalLinkUrl": null, "wtbExternalLinkSelfFlag": "Y", "inquiryToBuyFlag": "N", "productSupportFlag": "N", "buyNowFlag": "N", "categoryId": "CT20206007", "modelUrlPath": "/ru/televisions/lg-55nu800b6la", "categoryName": "Телевизоры", "reviewRating": "0", "reviewRatingStar": "0", "reviewRatingStar2": "0.0", "reviewRatingPercent": "0", "reStockAlertFlag": "N", "reStockAlertUrl": "", "modelRollingImgList": "/ru/images/televisions/md09003547/md09003547-350x350.jpg,/ru/images/televisions/md09003547/thumbnail/350-m02.jpg,/ru/images/televisions/md09003547/thumbnail/medium02.jpg,/ru/images/televisions/md09003547/thumbnail/medium03.jpg,/ru/images/televisions/md09003547/thumbnail/medium04.jpg,/ru/images/televisions/md09003547/thumbnail/medium05.jpg", "smallModelRollingImgList": "/ru/images/televisions/md09003547/md09003547-260x260.jpg,/ru/images/televisions/md09003547/thumbnail/260-m02.jpg,/ru/images/televisions/md09003547/thumbnail/small02.jpg,/ru/images/televisions/md09003547/thumbnail/small03.jpg,/ru/images/televisions/md09003547/thumbnail/small04.jpg,/ru/images/televisions/md09003547/thumbnail/small05.jpg", "sortBy": null, "siblingGroupCode": null, "siblingCode": null, "defaultSiblingModelFlag": null, "plpHighlightModelFlag": "Y", "siblingLocalValue": null, "target": null, "siblingType": null, "totalCount": 203, "promotionTotalCount": 0, "totalSize": 50, "bizType": "B2C", "wtbUseFlag": "Y", "userFriendlyName": "55-дюймовый телевизор Smart TV LG NANO 4K UHD AI NU80 2026", "mediumImageAddr": "/ru/images/televisions/md09003547/md09003547-350x350.jpg", "smallImageAddr": "/ru/images/televisions/md09003547/md09003547-260x260.jpg", "imageAltText": "Вид спереди на телевизор LG NANO 4K UHD AI NU80, выпущенный в 2026 году, экран которого заполнен богато текстурированными слоями цвета, напоминающими ткань, где яркие разноцветные складки плавно переп", "defaultProductTag": "Новинка", "productTag1": "Новинка", "productTag2": "", "productTag1UserType": "ALL", "productTag2UserType": "", "preOrderTagEnableFlag": null, "obsComTagShowFlag": "N", "productTag1Type": "COM", "productTag2Type": "COM", "whereToBuyUrl": "/ru/televisions/lg-55nu800b6la#pdp_where", "findTheDealerUrl": null, "inquiryToBuyUrl": null, "retailerPricingFlag": "N", "retailerPricingText": "Смотреть ритейлеров для ценообразования", "siblingModels": [], "promotionText": null, "modelType": "G", "bundlePlpDisplayFlag": "Y", "obsTotalCount": 0, "bundlesTotalCount": 0, "salesModelCode": "55NU800B6LA", "salesSuffixCode": "ARUQ", "energyLabel": null, "energyLabelFileName": null, "energyLabelOriginalName": null, "productFicheFileName": null, "productFicheOriginalName": null, "energyLabelDocId": null, "productFicheDocId": null, "energyLabelImageAddr": null, "energyLabelName": null, "energyLabelCategory": null, "reviewType": null, "productMessages": null, "productSupportUrl": null, "buyNowUrl": "", "discountMsg": null, "ecommerceTarget": "_blank", "releaseYear": null, "releaseDate": null, "obsLoginFlag": "N", "buyNowUseFlag": null, "promotionLinkUrl": null, "externalLinkTarget": null, "obsVipPrice": null, "vipPriceFlag": "N", "obsVipTotalCount": 0, "obsBuynowFlag": "", "labelIconMap": [{"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD09003547", "linkUrl": "", "shortDesc": "Наноусилитель деталей (Nano Detail Enhancer) улучшает текстуру и глубину для изображения в 4K", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "1"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD09003547", "linkUrl": "", "shortDesc": "Платформа webOS предлагает передовые возможности ИИ на базе Google Gemini и Microsoft Copilot", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "2"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD09003547", "linkUrl": "", "shortDesc": "ИИ Хаб открывает доступ к интеллектуальному персонализированному использованию, защищенному LG Shield", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "3"}], "whiteSpaceMap": [], "signatureFlag": "N", "thinqFlag": "N", "modelBrand": null, "tagContentAreaYn": "Y", "modelBrandAreaYn": "N", "siblingAreaYn": "Y", "reviewAreaYn": "N", "promotionAreaYn": "N", "priceAreaYn": "N", "energyFicheAreaYn": "N", "btnAreaYn": "T", "specMsgFlagAreaYn": "N", "obsLimitSale": "N", "limitSaleUseFlag": "N", "limitSaleTitle": "Продажа ограниченным количеством", "limitSaleAreaYn": "N", "buName1": "MS", "buName2": "TV", "buName3": "NanoCell_TV", "superCategoryName": "tv-audio-video", "categoryEngName": "televisions", "wishTotalCnt": "0", "myWishCnt": "N", "domain": null, "fEnergyLabelDocId": null, "fEnergyLabelFileName": null, "fEnergyLabelOriginalName": null, "obsPreOrderEnableFlag": null, "obsPreOrderInventoryFlag": null, "obsPreOrderStartDate": null, "obsPreOrderEndDate": null, "obsPreOrderValidDateFlag": "N", "obsPreOrderTotalPreQuantity": null, "obsPreOrderSalablePreQuantity": null, "obsPreOrderFlag": "N", "obsPreOrderRSAFlag": "N", "obsInstallmentFee": null, "obsInstallmentMonth": null, "obsInstallmentPrice": null, "obsInstallmentTan": null, "obsInstallmentTaeg": null, "obsInstallmentTotalPrice": null, "emiMsg": "", "emiMsgAreaYn": "N", "emiPopupUrl": "", "obsEmiMsgFlag": "N", "modelYear": "2026", "specMsgFlag": null, "obsMembershipPrice": 0.0, "rMembershipPrice": null, "rMembershipPriceCent": null, "membershipDisplayFlag": "N", "starRatingValue": null, "participantCount": null, "starRatingPercent": null, "obsCheaperPrice": 0.0, "cheaperPrice": null, "cheaperPriceCent": null, "cheaperPriceFlag": "N", "lowestPriceFlag": null, "obsLowestPriceFlag": "N", "obsLowestPrice": null, "obsLowestPriceCent": null, "obsVipLowestPriceFlag": "N", "obsVipLowestPrice": null, "obsVipLowestPriceCent": null, "afterPay": "0", "obsInstallmentMemberPrice": null, "obsInstallmentMemberMonth": null, "obsInstallmentMemberFee": null, "obsInstallmentMemberTan": null, "obsInstallmentMemberTaeg": null, "obsInstallmentMemberTotalPrice": null, "emiMemberMsg": "", "recommendedRetailRriceInfo": null, "obsMembershipLinkUseFlag": "N", "obsMembershipLinkUrl": "", "obsMembershipLinkTarget": "", "obsPreOrderCount": 0, "obsPartnerUrl": "", "buyNowUnionStoreBtnFlag": "N", "obsZipPayMsg": null, "pdrCompareUseFlag": "Y", "obsLeadTimeFlag": "N", "obsLeadTimeMin": "", "obsLeadTimeMax": "", "promotionTagTextFlag": "N", "promotionTagText": "Extra coupon alleen voor leden", "secondEnergyLabel": null, "secondEnergyLabelFileName": null, "secondEnergyLabelOriginalName": null, "secondProductFicheFileName": null, "secondProductFicheOriginalName": null, "secondEnergyLabelDocId": null, "secondProductFicheDocId": null, "secondEnergyLabelImageAddr": null, "secondEnergyLabelName": null, "secondEnergyLabelCategory": null, "washTowerFlag": "N", "secondFEnergyLabelDocId": null, "secondFEnergyLabelFileName": null, "secondFEnergyLabelOriginalName": null, "energyLabelproductLeve1Code": null, "fenergyLabelproductLeve1Code": null, "productFicheproductLeve1Code": null, "secondEnergyLabelproductLeve1Code": null, "secondFEnergyLabelproductLeve1Code": null, "secondProductFicheproductLeve1Code": null, "firstLabelCheckFlag": null, "obsInstallmentCashback1": null, "obsInstallmentCashback2": null, "obsInstallmentMemberCashback1": "", "obsInstallmentMemberCashback2": "", "userGroup": null, "obsInstallmentInterestFlag": null, "labelRepairMap": [], "repairModelAreaYn": "N", "productTag1ColorFlag": "N", "productTag2ColorFlag": "N", "docTypeCodeFlag": "", "hideInstallationMessageFlag": "N", "obsInsatllationDisplayFlag": null, "obsSubscriptionEnableFlag": null, "obsSubscriptionStatus": null, "obsSubscriptionMaxMonth": null, "obsSubscriptionMonthlyCost": 0.0, "obsSubscriptionDisclaimer": null, "obsSubscriptionLandingPageUrl": null, "obsSubscriptionCtaLinkTarget": "", "obsConvertSubscriptionMonthlyCost": "", "obsConvertSubscriptionMonthlyCostCent": "", "exchanageOfferFlag": null, "guestPriceMessage": null, "guestPriceMessageUseFlag": null, "obsWelcomePriceUseFlag": "N", "obsWelcomePrice": "", "obsWelcomePriceCent": "", "obsWelcomePriceDescription": "", "pisDocType": null, "pisDocOldFlag": null, "secondPisDocType": null, "secondPfCode": null, "elType": null, "secondElType": null, "b2cPriceOnVipGroupsUseFlag": "N", "epsDocType": null, "epsPictoFlag": "N", "includeChargerYn": null, "minPower": null, "maxPower": null, "usbPdYn": null, "energyLabelUpperTextUseFlag": "N", "energyLabelUpperText": null, "localeCode": "RU", "tempdata": 0}]}], "message": "", "status": "success", "dataCount": 1}"""
+API_FIXTURE_JSON = r"""{"data": [{"pageInfo": {"view": "Y", "pageCount": 5, "loopStart": 1, "page": 1, "loopEnd": 5, "totalCount": 50, "rightPage": false, "leftPage": false, "categoryInfo": ""}, "totalCount": 203, "productList": [{"modelId": "MD07610675", "modelName": "OLED83W69LA", "inchCode": "83", "modelStatusCode": "ACTIVE", "msrp": 0.0, "promotionPrice": 0.0, "obsProductUrl": null, "obsOriginalPrice": 0.0, "obsSellingPrice": 0.0, "obsCurrency": null, "obsInventoryFlag": null, "obsProductCount": 0, "obsSellFlag": null, "resellerBtnFlag": "N", "resellerLinkUrl": "", "discountedRate": null, "rDiscountedPrice": null, "rDiscountedPriceCent": null, "rPrice": null, "rPriceCent": null, "rPromoPrice": null, "rPromoPriceCent": null, "addToCartFlag": "N", "findTheDealerFlag": "N", "whereToBuyFlag": "Y", "wtbExternalLinkUseFlag": "N", "wtbExternalLinkName": "", "wtbExternalLinkUrl": "", "wtbExternalLinkSelfFlag": "Y", "inquiryToBuyFlag": "N", "productSupportFlag": "N", "buyNowFlag": "N", "categoryId": "CT20206007", "modelUrlPath": "/ru/televisions/lg-oled83w69la", "categoryName": "Телевизоры", "reviewRating": "0", "reviewRatingStar": "0", "reviewRatingStar2": "0.0", "reviewRatingPercent": "0", "reStockAlertFlag": "N", "reStockAlertUrl": "", "modelRollingImgList": "/ru/images/televisions/md07610675/md07610675-350x350.jpg,/ru/images/televisions/md07610675/thumbnail/350-1.jpg,/ru/images/televisions/md07610675/thumbnail/350-2.jpg,/ru/images/televisions/md07610675/thumbnail/350-3.jpg,/ru/images/televisions/md07610675/thumbnail/350-4.jpg,/ru/images/televisions/md07610675/thumbnail/350-5.jpg", "smallModelRollingImgList": "/ru/images/televisions/md07610675/md07610675-260x260.jpg,/ru/images/televisions/md07610675/thumbnail/260-1.jpg,/ru/images/televisions/md07610675/thumbnail/260-2.jpg,/ru/images/televisions/md07610675/thumbnail/260-3.jpg,/ru/images/televisions/md07610675/thumbnail/260-4.jpg,/ru/images/televisions/md07610675/thumbnail/260-5.jpg", "sortBy": null, "siblingGroupCode": "W69LA_RU", "siblingCode": "83", "defaultSiblingModelFlag": "Y", "plpHighlightModelFlag": "Y", "siblingLocalValue": "83\"", "target": "NEW", "siblingType": "SIZE", "totalCount": 203, "promotionTotalCount": 0, "totalSize": 50, "bizType": "B2C", "wtbUseFlag": "Y", "userFriendlyName": "83-дюймовый телевизор Smart TV Wallpaper TV LG OLED evo AI W6 4K 2026 года", "mediumImageAddr": "/ru/images/televisions/md07610675/md07610675-350x350.jpg", "smallImageAddr": "/ru/images/televisions/md07610675/md07610675-260x260.jpg", "imageAltText": "Вид спереди на телевизор LG OLED evo AI W6 Wallpaper TV, выпущенный в 2026 году, демонстрирует элегантный дизайн Wallpaper, а динамичная абстрактная композиция волнообразных градиентов ярких цветов пл", "defaultProductTag": "Новинка", "productTag1": "Новинка", "productTag2": "", "productTag1UserType": "ALL", "productTag2UserType": "", "preOrderTagEnableFlag": null, "obsComTagShowFlag": "N", "productTag1Type": "COM", "productTag2Type": "COM", "whereToBuyUrl": "/ru/televisions/lg-oled83w69la#pdp_where", "findTheDealerUrl": null, "inquiryToBuyUrl": null, "retailerPricingFlag": "N", "retailerPricingText": "Смотреть ритейлеров для ценообразования", "siblingModels": [{"modelName": "OLED83W69LA", "siblingCode": "83", "siblingValue": "83\"", "modelId": "MD07610675"}, {"modelName": "OLED77W69LA", "siblingCode": "77", "siblingValue": "77\"", "modelId": "MD08807920"}], "promotionText": null, "modelType": "G", "bundlePlpDisplayFlag": "Y", "obsTotalCount": 0, "bundlesTotalCount": 0, "salesModelCode": "OLED83W69LA", "salesSuffixCode": "ARUG", "energyLabel": null, "energyLabelFileName": null, "energyLabelOriginalName": null, "productFicheFileName": null, "productFicheOriginalName": null, "energyLabelDocId": null, "productFicheDocId": null, "energyLabelImageAddr": null, "energyLabelName": null, "energyLabelCategory": null, "reviewType": null, "productMessages": null, "productSupportUrl": null, "buyNowUrl": "", "discountMsg": null, "ecommerceTarget": "_blank", "releaseYear": null, "releaseDate": null, "obsLoginFlag": "N", "buyNowUseFlag": null, "promotionLinkUrl": null, "externalLinkTarget": null, "obsVipPrice": null, "vipPriceFlag": "N", "obsVipTotalCount": 0, "obsBuynowFlag": "", "labelIconMap": [{"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD07610675", "linkUrl": "", "shortDesc": "Благодаря толщине всего 9 мм дизайн Wallpaper привносит эстетичность в окружающее пространство", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "1"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD07610675", "linkUrl": "", "shortDesc": "Технология беспроводной передачи данных 4K 165 Гц для безупречного качества изображения", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "2"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD07610675", "linkUrl": "", "shortDesc": "Технология сверхсияющего цвета в телевизорах LG OLED нового поколения для нового уровня качества изображения", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "3"}], "whiteSpaceMap": [], "signatureFlag": "N", "thinqFlag": "N", "modelBrand": null, "tagContentAreaYn": "Y", "modelBrandAreaYn": "N", "siblingAreaYn": "Y", "reviewAreaYn": "N", "promotionAreaYn": "N", "priceAreaYn": "N", "energyFicheAreaYn": "N", "btnAreaYn": "T", "specMsgFlagAreaYn": "N", "obsLimitSale": "N", "limitSaleUseFlag": "N", "limitSaleTitle": "Продажа ограниченным количеством", "limitSaleAreaYn": "N", "buName1": "MS", "buName2": "TV", "buName3": "QNED_TV", "superCategoryName": "tv-audio-video", "categoryEngName": "televisions", "wishTotalCnt": "0", "myWishCnt": "N", "domain": null, "fEnergyLabelDocId": null, "fEnergyLabelFileName": null, "fEnergyLabelOriginalName": null, "obsPreOrderEnableFlag": null, "obsPreOrderInventoryFlag": null, "obsPreOrderStartDate": null, "obsPreOrderEndDate": null, "obsPreOrderValidDateFlag": "N", "obsPreOrderTotalPreQuantity": null, "obsPreOrderSalablePreQuantity": null, "obsPreOrderFlag": "N", "obsPreOrderRSAFlag": "N", "obsInstallmentFee": null, "obsInstallmentMonth": null, "obsInstallmentPrice": null, "obsInstallmentTan": null, "obsInstallmentTaeg": null, "obsInstallmentTotalPrice": null, "emiMsg": "", "emiMsgAreaYn": "N", "emiPopupUrl": "", "obsEmiMsgFlag": "N", "modelYear": "2026", "specMsgFlag": null, "obsMembershipPrice": 0.0, "rMembershipPrice": null, "rMembershipPriceCent": null, "membershipDisplayFlag": "N", "starRatingValue": null, "participantCount": null, "starRatingPercent": null, "obsCheaperPrice": 0.0, "cheaperPrice": null, "cheaperPriceCent": null, "cheaperPriceFlag": "N", "lowestPriceFlag": null, "obsLowestPriceFlag": "N", "obsLowestPrice": null, "obsLowestPriceCent": null, "obsVipLowestPriceFlag": "N", "obsVipLowestPrice": null, "obsVipLowestPriceCent": null, "afterPay": "0", "obsInstallmentMemberPrice": null, "obsInstallmentMemberMonth": null, "obsInstallmentMemberFee": null, "obsInstallmentMemberTan": null, "obsInstallmentMemberTaeg": null, "obsInstallmentMemberTotalPrice": null, "emiMemberMsg": "", "recommendedRetailRriceInfo": null, "obsMembershipLinkUseFlag": "N", "obsMembershipLinkUrl": "", "obsMembershipLinkTarget": "", "obsPreOrderCount": 0, "obsPartnerUrl": "", "buyNowUnionStoreBtnFlag": "N", "obsZipPayMsg": null, "pdrCompareUseFlag": "Y", "obsLeadTimeFlag": "N", "obsLeadTimeMin": "", "obsLeadTimeMax": "", "promotionTagTextFlag": "N", "promotionTagText": "Extra coupon alleen voor leden", "secondEnergyLabel": null, "secondEnergyLabelFileName": null, "secondEnergyLabelOriginalName": null, "secondProductFicheFileName": null, "secondProductFicheOriginalName": null, "secondEnergyLabelDocId": null, "secondProductFicheDocId": null, "secondEnergyLabelImageAddr": null, "secondEnergyLabelName": null, "secondEnergyLabelCategory": null, "washTowerFlag": "N", "secondFEnergyLabelDocId": null, "secondFEnergyLabelFileName": null, "secondFEnergyLabelOriginalName": null, "energyLabelproductLeve1Code": null, "fenergyLabelproductLeve1Code": null, "productFicheproductLeve1Code": null, "secondEnergyLabelproductLeve1Code": null, "secondFEnergyLabelproductLeve1Code": null, "secondProductFicheproductLeve1Code": null, "firstLabelCheckFlag": null, "obsInstallmentCashback1": null, "obsInstallmentCashback2": null, "obsInstallmentMemberCashback1": "", "obsInstallmentMemberCashback2": "", "userGroup": null, "obsInstallmentInterestFlag": null, "labelRepairMap": [], "repairModelAreaYn": "N", "productTag1ColorFlag": "N", "productTag2ColorFlag": "N", "docTypeCodeFlag": "", "hideInstallationMessageFlag": "N", "obsInsatllationDisplayFlag": null, "obsSubscriptionEnableFlag": null, "obsSubscriptionStatus": null, "obsSubscriptionMaxMonth": null, "obsSubscriptionMonthlyCost": 0.0, "obsSubscriptionDisclaimer": null, "obsSubscriptionLandingPageUrl": null, "obsSubscriptionCtaLinkTarget": "", "obsConvertSubscriptionMonthlyCost": "", "obsConvertSubscriptionMonthlyCostCent": "", "exchanageOfferFlag": null, "guestPriceMessage": null, "guestPriceMessageUseFlag": null, "obsWelcomePriceUseFlag": "N", "obsWelcomePrice": "", "obsWelcomePriceCent": "", "obsWelcomePriceDescription": "", "pisDocType": null, "pisDocOldFlag": null, "secondPisDocType": null, "secondPfCode": null, "elType": null, "secondElType": null, "b2cPriceOnVipGroupsUseFlag": "N", "epsDocType": null, "epsPictoFlag": "N", "includeChargerYn": null, "minPower": null, "maxPower": null, "usbPdYn": null, "energyLabelUpperTextUseFlag": "N", "energyLabelUpperText": null, "localeCode": "RU", "tempdata": 0}, {"modelId": "MD09003547", "modelName": "55NU800B6LA", "inchCode": "55", "modelStatusCode": "ACTIVE", "msrp": 0.0, "promotionPrice": 0.0, "obsProductUrl": null, "obsOriginalPrice": 0.0, "obsSellingPrice": 0.0, "obsCurrency": null, "obsInventoryFlag": null, "obsProductCount": 0, "obsSellFlag": null, "resellerBtnFlag": "N", "resellerLinkUrl": "", "discountedRate": null, "rDiscountedPrice": null, "rDiscountedPriceCent": null, "rPrice": null, "rPriceCent": null, "rPromoPrice": null, "rPromoPriceCent": null, "addToCartFlag": "N", "findTheDealerFlag": "N", "whereToBuyFlag": "Y", "wtbExternalLinkUseFlag": "N", "wtbExternalLinkName": "", "wtbExternalLinkUrl": null, "wtbExternalLinkSelfFlag": "Y", "inquiryToBuyFlag": "N", "productSupportFlag": "N", "buyNowFlag": "N", "categoryId": "CT20206007", "modelUrlPath": "/ru/televisions/lg-55nu800b6la", "categoryName": "Телевизоры", "reviewRating": "0", "reviewRatingStar": "0", "reviewRatingStar2": "0.0", "reviewRatingPercent": "0", "reStockAlertFlag": "N", "reStockAlertUrl": "", "modelRollingImgList": "/ru/images/televisions/md09003547/md09003547-350x350.jpg,/ru/images/televisions/md09003547/thumbnail/350-m02.jpg,/ru/images/televisions/md09003547/thumbnail/medium02.jpg,/ru/images/televisions/md09003547/thumbnail/medium03.jpg,/ru/images/televisions/md09003547/thumbnail/medium04.jpg,/ru/images/televisions/md09003547/thumbnail/medium05.jpg", "smallModelRollingImgList": "/ru/images/televisions/md09003547/md09003547-260x260.jpg,/ru/images/televisions/md09003547/thumbnail/260-m02.jpg,/ru/images/televisions/md09003547/thumbnail/small02.jpg,/ru/images/televisions/md09003547/thumbnail/small03.jpg,/ru/images/televisions/md09003547/thumbnail/small04.jpg,/ru/images/televisions/md09003547/thumbnail/small05.jpg", "sortBy": null, "siblingGroupCode": null, "siblingCode": null, "defaultSiblingModelFlag": null, "plpHighlightModelFlag": "Y", "siblingLocalValue": null, "target": null, "siblingType": null, "totalCount": 203, "promotionTotalCount": 0, "totalSize": 50, "bizType": "B2C", "wtbUseFlag": "Y", "userFriendlyName": "55-дюймовый телевизор Smart TV LG NANO 4K UHD AI NU80 2026", "mediumImageAddr": "/ru/images/televisions/md09003547/md09003547-350x350.jpg", "smallImageAddr": "/ru/images/televisions/md09003547/md09003547-260x260.jpg", "imageAltText": "Вид спереди на телевизор LG NANO 4K UHD AI NU80, выпущенный в 2026 году, экран которого заполнен богато текстурированными слоями цвета, напоминающими ткань, где яркие разноцветные складки плавно переп", "defaultProductTag": "Новинка", "productTag1": "Новинка", "productTag2": "", "productTag1UserType": "ALL", "productTag2UserType": "", "preOrderTagEnableFlag": null, "obsComTagShowFlag": "N", "productTag1Type": "COM", "productTag2Type": "COM", "whereToBuyUrl": "/ru/televisions/lg-55nu800b6la#pdp_where", "findTheDealerUrl": null, "inquiryToBuyUrl": null, "retailerPricingFlag": "N", "retailerPricingText": "Смотреть ритейлеров для ценообразования", "siblingModels": [], "promotionText": null, "modelType": "G", "bundlePlpDisplayFlag": "Y", "obsTotalCount": 0, "bundlesTotalCount": 0, "salesModelCode": "55NU800B6LA", "salesSuffixCode": "ARUQ", "energyLabel": null, "energyLabelFileName": null, "energyLabelOriginalName": null, "productFicheFileName": null, "productFicheOriginalName": null, "energyLabelDocId": null, "productFicheDocId": null, "energyLabelImageAddr": null, "energyLabelName": null, "energyLabelCategory": null, "reviewType": null, "productMessages": null, "productSupportUrl": null, "buyNowUrl": "", "discountMsg": null, "ecommerceTarget": "_blank", "releaseYear": null, "releaseDate": null, "obsLoginFlag": "N", "buyNowUseFlag": null, "promotionLinkUrl": null, "externalLinkTarget": null, "obsVipPrice": null, "vipPriceFlag": "N", "obsVipTotalCount": 0, "obsBuynowFlag": "", "labelIconMap": [{"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD09003547", "linkUrl": "", "shortDesc": "Наноусилитель деталей (Nano Detail Enhancer) улучшает текстуру и глубину для изображения в 4K", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "1"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD09003547", "linkUrl": "", "shortDesc": "Платформа webOS предлагает передовые возможности ИИ на базе Google Gemini и Microsoft Copilot", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "2"}, {"iconId": "", "shortDescType": "BULLET", "altText": "", "linkOpt": "", "modelId": "MD09003547", "linkUrl": "", "shortDesc": "ИИ Хаб открывает доступ к интеллектуальному персонализированному использованию, защищенному LG Shield", "imagePathAddr": "", "TEMP_SEQ": "8", "cssFontBold": "", "cssFontItalic": "", "repOrderNo": "3"}], "whiteSpaceMap": [], "signatureFlag": "N", "thinqFlag": "N", "modelBrand": null, "tagContentAreaYn": "Y", "modelBrandAreaYn": "N", "siblingAreaYn": "Y", "reviewAreaYn": "N", "promotionAreaYn": "N", "priceAreaYn": "N", "energyFicheAreaYn": "N", "btnAreaYn": "T", "specMsgFlagAreaYn": "N", "obsLimitSale": "N", "limitSaleUseFlag": "N", "limitSaleTitle": "Продажа ограниченным количеством", "limitSaleAreaYn": "N", "buName1": "MS", "buName2": "TV", "buName3": "NanoCell_TV", "superCategoryName": "tv-audio-video", "categoryEngName": "televisions", "wishTotalCnt": "0", "myWishCnt": "N", "domain": null, "fEnergyLabelDocId": null, "fEnergyLabelFileName": null, "fEnergyLabelOriginalName": null, "obsPreOrderEnableFlag": null, "obsPreOrderInventoryFlag": null, "obsPreOrderStartDate": null, "obsPreOrderEndDate": null, "obsPreOrderValidDateFlag": "N", "obsPreOrderTotalPreQuantity": null, "obsPreOrderSalablePreQuantity": null, "obsPreOrderFlag": "N", "obsPreOrderRSAFlag": "N", "obsInstallmentFee": null, "obsInstallmentMonth": null, "obsInstallmentPrice": null, "obsInstallmentTan": null, "obsInstallmentTaeg": null, "obsInstallmentTotalPrice": null, "emiMsg": "", "emiMsgAreaYn": "N", "emiPopupUrl": "", "obsEmiMsgFlag": "N", "modelYear": "2026", "specMsgFlag": null, "obsMembershipPrice": 0.0, "rMembershipPrice": null, "rMembershipPriceCent": null, "membershipDisplayFlag": "N", "starRatingValue": null, "participantCount": null, "starRatingPercent": null, "obsCheaperPrice": 0.0, "cheaperPrice": null, "cheaperPriceCent": null, "cheaperPriceFlag": "N", "lowestPriceFlag": null, "obsLowestPriceFlag": "N", "obsLowestPrice": null, "obsLowestPriceCent": null, "obsVipLowestPriceFlag": "N", "obsVipLowestPrice": null, "obsVipLowestPriceCent": null, "afterPay": "0", "obsInstallmentMemberPrice": null, "obsInstallmentMemberMonth": null, "obsInstallmentMemberFee": null, "obsInstallmentMemberTan": null, "obsInstallmentMemberTaeg": null, "obsInstallmentMemberTotalPrice": null, "emiMemberMsg": "", "recommendedRetailRriceInfo": null, "obsMembershipLinkUseFlag": "N", "obsMembershipLinkUrl": "", "obsMembershipLinkTarget": "", "obsPreOrderCount": 0, "obsPartnerUrl": "", "buyNowUnionStoreBtnFlag": "N", "obsZipPayMsg": null, "pdrCompareUseFlag": "Y", "obsLeadTimeFlag": "N", "obsLeadTimeMin": "", "obsLeadTimeMax": "", "promotionTagTextFlag": "N", "promotionTagText": "Extra coupon alleen voor leden", "secondEnergyLabel": null, "secondEnergyLabelFileName": null, "secondEnergyLabelOriginalName": null, "secondProductFicheFileName": null, "secondProductFicheOriginalName": null, "secondEnergyLabelDocId": null, "secondProductFicheDocId": null, "secondEnergyLabelImageAddr": null, "secondEnergyLabelName": null, "secondEnergyLabelCategory": null, "washTowerFlag": "N", "secondFEnergyLabelDocId": null, "secondFEnergyLabelFileName": null, "secondFEnergyLabelOriginalName": null, "energyLabelproductLeve1Code": null, "fenergyLabelproductLeve1Code": null, "productFicheproductLeve1Code": null, "secondEnergyLabelproductLeve1Code": null, "secondFEnergyLabelproductLeve1Code": null, "secondProductFicheproductLeve1Code": null, "firstLabelCheckFlag": null, "obsInstallmentCashback1": null, "obsInstallmentCashback2": null, "obsInstallmentMemberCashback1": "", "obsInstallmentMemberCashback2": "", "userGroup": null, "obsInstallmentInterestFlag": null, "labelRepairMap": [], "repairModelAreaYn": "N", "productTag1ColorFlag": "N", "productTag2ColorFlag": "N", "docTypeCodeFlag": "", "hideInstallationMessageFlag": "N", "obsInsatllationDisplayFlag": null, "obsSubscriptionEnableFlag": null, "obsSubscriptionStatus": null, "obsSubscriptionMaxMonth": null, "obsSubscriptionMonthlyCost": 0.0, "obsSubscriptionDisclaimer": null, "obsSubscriptionLandingPageUrl": null, "obsSubscriptionCtaLinkTarget": "", "obsConvertSubscriptionMonthlyCost": "", "obsConvertSubscriptionMonthlyCostCent": "", "exchanageOfferFlag": null, "guestPriceMessage": null, "guestPriceMessageUseFlag": null, "obsWelcomePriceUseFlag": "N", "obsWelcomePrice": "", "obsWelcomePriceCent": "", "obsWelcomePriceDescription": "", "pisDocType": null, "pisDocOldFlag": null, "secondPisDocType": null, "secondPfCode": null, "elType": null, "secondElType": null, "b2cPriceOnVipGroupsUseFlag": "N", "epsDocType": null, "epsPictoFlag": "N", "includeChargerYn": null, "minPower": null, "maxPower": null, "usbPdYn": null, "energyLabelUpperTextUseFlag": "N", "energyLabelUpperText": null, "localeCode": "RU", "tempdata": 0}]}], "message": "", "status": "success", "dataCount": 1}"""
 
 SUPPORT_FIXTURE_HTML = """<!DOCTYPE html><html><head><title>E-mail Президенту | LG</title>
 <link rel="stylesheet" href="/lg5-common-gp/css/common.css"/></head><body>
@@ -982,6 +984,13 @@ def check_parser_values():
         eq("provenance", a.price_source, "dom")
         check("image url is absolute",
               (a.image_url or "").startswith("https://www.lg.com/ru/images/"))
+        # Both measured identical to the API's own values on all 12 cards of
+        # page 2, which is why they are read from the card rather than left
+        # null with the API as the only source.
+        eq("the super category comes off the card", a.super_category,
+           "tv-audio-video")
+        eq("and so does the where-to-buy link, absolute", a.where_to_buy_url,
+           "https://www.lg.com/ru/televisions/lg-oled83w69la#pdp_where")
 
     b = by_sku.get("55NU800B6LA")
     check("the second grid card parsed", b is not None)
@@ -992,7 +1001,6 @@ def check_parser_values():
     check("the unfilled template row is not a product",
           "*modelName*" in PAGE_FIXTURE_HTML and
           all(r.sku != "*modelName*" for r in rows))
-    rail_models = {"data-model-name" in PAGE_FIXTURE_HTML}
     check("the recommendation rail is in the fixture but not in the rows",
           'class="products-list-group"' in PAGE_FIXTURE_HTML and len(rows) == 2)
 
@@ -1007,7 +1015,22 @@ def check_api_path_and_agreement():
     print("\n[the catalogue API, and whether it agrees with the grid]")
     payload = json.loads(API_FIXTURE_JSON)
     eq("the API's own product count is read", len(product_parser.api_products(payload)), 2)
-    eq("and so is the category's total", product_parser.api_total_count(payload), 203)
+    eq("and so is the number of products it pages through",
+       product_parser.api_row_count(payload), 50)
+    eq("and how many pages that is", product_parser.api_page_count(payload), 5)
+    # The trap: two fields named alike, one of which is not a product count.
+    eq("the count beside the product list is kept, and it is a different "
+       "number", product_parser.api_variant_count(payload), 203)
+    check("reading that one as the product count would report a complete run "
+          "as having lost three quarters of the catalogue",
+          product_parser.api_variant_count(payload)
+          > 4 * product_parser.api_row_count(payload) - 1)
+    past_end = {"data": [{"pageInfo": {"view": "N", "pageCount": 0},
+                          "totalCount": 0, "productList": []}]}
+    check("past the end the pagination block says nothing, and 0 pages is "
+          "read as unknown rather than as 'no pages'",
+          product_parser.api_page_count(past_end) is None
+          and product_parser.api_row_count(past_end) is None)
 
     form = product_parser.parse_catalog_form(
         PAGE_FIXTURE_HTML, "https://www.lg.com/ru/televisions")
@@ -1140,9 +1163,12 @@ def check_page_states():
     # Past the end the site answers 200 with an empty grid — the same shape
     # as an empty category. Only the page number tells them apart, and they
     # are different answers: complete versus exit 4.
+    # The shape page 99 of /ru/televisions really has: the site's assets, the
+    # filter form and the grid container, and not one card inside it.
     served_but_empty = ("<html><head>" +
                         '<link href="/lg5-common-gp/x.css">' * 10 +
-                        "</head><body><div class='result-box'></div></body></html>")
+                        "</head><body><form id='categoryFilterForm'></form>"
+                        "<div class='product-list-box'></div></body></html>")
     past_end = page_flow.classify(served_but_empty, page_num=9)
     eq("an empty grid on page 9 is exhausted", past_end.state, page_flow.EXHAUSTED)
     check("and that is a complete answer", past_end.policy.complete)
@@ -1178,6 +1204,35 @@ def check_page_states():
     api_state = page_flow.classify("", record_count=12, total_results=203)
     eq("an API response with records is content", api_state.state, page_flow.CONTENT)
     eq("and carries the category's own total", api_state.total_results, 203)
+
+    # A JSON payload carries no asset paths and no challenge wording. Weighing
+    # HTML evidence against it called every empty API page a block, which the
+    # engine then read as "nothing new here" and reported as a complete run.
+    api_empty = page_flow.classify("", record_count=0, page_num=1, total_results=0)
+    eq("an API page with no products is empty, not blocked",
+       api_empty.state, page_flow.EMPTY)
+    api_past_end = page_flow.classify("", record_count=0, page_num=4,
+                                      total_results=203)
+    eq("and past the end of the category it is exhausted",
+       api_past_end.state, page_flow.EXHAUSTED)
+    check("neither is ever reported as a block",
+          not api_empty.policy.blocked and not api_past_end.policy.blocked)
+
+    # The shell: LG's own assets, none of the grid's machinery. Measured on
+    # the real pages — a served category page carries `categoryFilterForm`
+    # and `product-list-box` whether or not it holds a single product, so a
+    # response without them has not painted the grid yet.
+    shell = page_flow.classify(SHELL_FIXTURE_HTML, page_num=1)
+    eq("the app shell is unpainted, not an empty category",
+       shell.state, page_flow.UNPAINTED)
+    check("so the engines wait and read it again rather than exiting 4",
+          shell.policy.retry and shell.policy.wait_first)
+    check("an empty response is unpainted too",
+          page_flow.classify("").state == page_flow.UNPAINTED)
+    check("(measured on the real pages: a good page and page 99, which holds "
+          "no cards at all, both carry that machinery)",
+          product_parser.has_category_machinery(PAGE_FIXTURE_HTML)
+          and product_parser.has_category_machinery(served_but_empty))
 
 
 def check_known_limitations_are_pinned():
@@ -2336,6 +2391,174 @@ def check_worker_pools_start_on_different_exits():
        engine._worker_pool(None, 0), None)
 
 
+def _catalog_args(tmp, **kw):
+    """The argument object `catalog_client.parse_args()` produces.
+
+    Built by hand rather than through parse_args so a case can set `pages`
+    or `retries` without going through argv; the flag set itself is checked
+    against the real parser below.
+    """
+    base = dict(url="https://www.lg.com/ru/televisions", category="televisions",
+                pages=3, delay=0.0, retries=2, retry_delay=0.0, timeout=5.0,
+                format="json", out=os.path.join(tmp, "out"), proxy=None,
+                proxy_file=None, proxy_rotate="per-run", proxy_shuffle=False,
+                allow_empty=False, dump_html=None)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _api_payload(records):
+    """A catalogue-API answer carrying exactly `records`, in the real shape."""
+    page = json.loads(API_FIXTURE_JSON)
+    page["data"][0]["productList"] = records
+    return page
+
+
+def _run_catalog(tmp, pages_html, api_pages, **kw):
+    """Run catalog_client.scrape() with both network calls stubbed out.
+
+    `pages_html` is (html, status) for the category page; `api_pages` is a
+    list of (payload, status), one per POST, the last entry repeating.
+    Returns (exit code, the rows written, the sidecar or None, call log).
+    """
+    calls = {"api": 0}
+    original = (catalog_client.fetch_category_page, catalog_client.fetch_api_page)
+
+    def fake_page(session, url, timeout):
+        return pages_html
+
+    def fake_api(session, form, page_num, referer, timeout):
+        calls["api"] += 1
+        return api_pages[min(calls["api"] - 1, len(api_pages) - 1)]
+
+    args = _catalog_args(tmp, **kw)
+    catalog_client.fetch_category_page, catalog_client.fetch_api_page = fake_page, fake_api
+    try:
+        with redirect_stdout(io.StringIO()):
+            rc = catalog_client.scrape(args)
+    finally:
+        catalog_client.fetch_category_page, catalog_client.fetch_api_page = original
+
+    rows, meta = None, None
+    if os.path.exists(f"{args.out}.json"):
+        rows = json.load(open(f"{args.out}.json", encoding="utf-8"))
+    if os.path.exists(f"{args.out}.meta.json"):
+        meta = json.load(open(f"{args.out}.meta.json", encoding="utf-8"))
+    return rc, rows, meta, calls
+
+
+def check_catalog_client_run():
+    """The primary engine, driven end to end with the network stubbed.
+
+    Everything below the HTTP calls is the real thing: the form is read off
+    the page fixture, the payload is built from it, the pages are classified,
+    the rows are parsed and deduped, and finish_run decides the exit code.
+    Without this group the engine that actually ships was the only one no
+    check ever ran.
+    """
+    print("\n[the catalogue engine, end to end]")
+    served = (PAGE_FIXTURE_HTML, 200)
+    full = _api_payload(json.loads(API_FIXTURE_JSON)["data"][0]["productList"])
+    empty = _api_payload([])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(full, 200), (empty, 200)])
+        eq("a run that reaches the end of the catalogue exits 0", rc, 0)
+        eq("and writes the products the API returned", len(rows or []), 2)
+        eq("the API was called once per page, no more", calls["api"], 2)
+        eq("the sidecar calls it complete", (meta or {}).get("status"), "complete")
+        eq("the sidecar carries the number of products the category pages "
+           "through, not the site's variant count",
+           (meta or {}).get("total_results"), 50)
+        eq("an empty page ends the run as exhausted, not as an error",
+           (meta or {}).get("stop_reason"), "listing_exhausted")
+        eq("both pages count as completed", (meta or {}).get("pages_completed"), 2)
+        check("every row says which path produced it",
+              all(r["price_source"] == "api" for r in rows or [{}]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # The same products again on page 2 — pagination looping back on
+        # itself, which is a property of the DATA, not of a selector.
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(full, 200)])
+        eq("a page that repeats the previous one ends the run", rc, 0)
+        eq("and its duplicates never reach the output", len(rows or []), 2)
+        eq("the sidecar says why it stopped",
+           (meta or {}).get("stop_reason"), "no_new_products")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(
+            tmp, (AKAMAI_REFUSAL_FIXTURE_HTML, 403), [(full, 200)])
+        eq("a refusal page is exit 3, not 'zero products'", rc, EXIT_BLOCKED)
+        eq("and the catalogue API is never called", calls["api"], 0)
+        check("nothing is written", rows is None and meta is None)
+        check("but the refusal itself is saved for a human to read",
+              os.path.exists(os.path.join(tmp, "out_page1_debug.html")))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(tmp, (SHELL_FIXTURE_HTML, 200),
+                                             [(full, 200)])
+        eq("a page with no #categoryFilterForm exits 4", rc, EXIT_NO_PRODUCTS)
+        eq("and no API call is invented from a hardcoded category id",
+           calls["api"], 0)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(
+            tmp, served, [(full, 200), (None, 500)], retries=3)
+        eq("a run that loses a page mid-way is partial, exit 6", rc, EXIT_PARTIAL)
+        eq("the page that was gathered is still written", len(rows or []), 2)
+        eq("the sidecar names WHICH page failed", (meta or {}).get("pages_failed"), [2])
+        eq("and calls the run partial", (meta or {}).get("status"), "partial")
+        eq("the failing page was retried --retries times, then given up on",
+           calls["api"], 1 + 3)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # The category page itself never arrived. The family contract maps
+        # "nothing gathered, nothing blocking" to exit 4; what keeps that
+        # honest is the log line and the absence of a sidecar claiming a
+        # successful empty category. Pinned so it cannot drift silently.
+        rc, rows, meta, calls = _run_catalog(tmp, (None, None), [(full, 200)])
+        eq("a category page that never loaded exits 4", rc, EXIT_NO_PRODUCTS)
+        eq("with no API call attempted", calls["api"], 0)
+        check("and no sidecar claiming an empty category", meta is None)
+
+    # The flag contract. This engine drives no browser, so it carries the
+    # shared flags and none of the browser-only ones — asserted in both
+    # directions so neither set drifts.
+    argv = sys.argv
+    sys.argv = ["catalog_client", "--url", "https://www.lg.com/ru/televisions"]
+    try:
+        flags = set(vars(catalog_client.parse_args()))
+    finally:
+        sys.argv = argv
+    shared = {"url", "category", "pages", "format", "out", "delay", "retries",
+              "retry_delay", "proxy", "proxy_file", "proxy_rotate",
+              "proxy_shuffle", "allow_empty", "dump_html"}
+    missing = shared - flags
+    check("the catalogue engine carries every shared flag"
+          + (f" (missing {sorted(missing)})" if missing else ""), not missing)
+    browser_only = {"concurrency", "twocaptcha_key", "captcha_api",
+                    "solve_captcha", "min_score", "cdp_endpoint", "headless",
+                    "fingerprint", "fp_tags", "fp_country",
+                    "proxy_block_retries"}
+    present = browser_only & flags
+    check("and none of the browser-only ones, which would do nothing here"
+          + (f" (has {sorted(present)})" if present else ""), not present)
+    eq("its extras over the shared set are the timeout it needs",
+       sorted(flags - shared), ["timeout"])
+
+    # The locale guard runs in the entry point, not only in the parser.
+    sys.argv = ["catalog_client", "--url", "https://www.lg.com/us/tvs"]
+    try:
+        with redirect_stdout(io.StringIO()):
+            catalog_client.parse_args()
+        check("a locale this repo cannot scrape is refused before any request", False)
+    except SystemExit as e:
+        eq("a locale this repo cannot scrape is refused before any request, "
+           "as bad usage", e.code, 2)
+    finally:
+        sys.argv = argv
+
+
 def main() -> int:
     logging.basicConfig(level=logging.ERROR)
     print("lg-scraper offline suite")
@@ -2349,7 +2572,8 @@ def main() -> int:
                   check_captcha_detection, check_credentials_never_leak,
                   check_remote_connect_failures_are_redacted,
                   check_proxy_rotation, check_proxy_preflight,
-                  check_output_contract, check_engine_parity,
+                  check_output_contract, check_catalog_client_run,
+                  check_engine_parity,
                   check_readiness_wait_is_csp_safe,
                   check_engine_imports_driver_at_module_level,
                   check_no_undefined_names, check_shared_calls_bind,

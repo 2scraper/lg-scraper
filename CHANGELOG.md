@@ -20,14 +20,34 @@ justified the change.
   read off the page every run — `categoryId` differs per category AND per
   locale, and hardcoding one would scrape a different catalogue than the URL
   asked for while reporting success.
+- **The API's two counts, told apart.** `pageInfo.totalCount` is the number
+  of products the category pages through (50 for RU televisions, 41 for UA);
+  the `totalCount` beside the product list is the count of SIZE VARIANTS
+  across those rows (203 for the same RU category — exactly the sum of every
+  row's `sibling_sizes`). Reading the second as a product count made a
+  complete 50-of-50 run warn that it had lost three quarters of the
+  catalogue, and wrote that claim into the run's metadata sidecar.
+  `pageInfo.pageCount` now also ends the run on the last page instead of
+  spending a request to discover the next one is empty.
 - **A second parse path over the rendered grid**, anchored on schema.org
   microdata and the site's own `data-model-*` attributes, verified to return
-  the same products and agree with the API on every shared column.
+  the same products in the same order, and agreeing with the API on every
+  column the card carries — `super_category` and `where_to_buy_url` are read
+  off the card for that reason. Three columns exist only in the API
+  (`product_category`, `product_category_slug`, `status`) and stay null on
+  the DOM path rather than being guessed; see README for the measurement.
 - **`page_flow.py`** — one classification of what a page IS (content, empty,
   past the end, unpainted, blocked) and one policy table shared by every
   engine. On this site the page NUMBER is part of it: past the end the site
   answers 200 with an empty grid and `totalCount: 0`, the same shape as a
-  category that is genuinely empty, and the two are different answers.
+  category that is genuinely empty, and the two are different answers. A
+  caller that read the catalogue API is judged on the record count alone:
+  the HTML evidence below it (asset paths, a challenge page's wording) is
+  absent from every JSON payload, so weighing it there called each exhausted
+  category a block. And a response carrying LG's assets but neither
+  `categoryFilterForm` nor `product-list-box` is the shell still painting,
+  not an empty category — measured on a good page and on page 99, which
+  holds no cards and carries both.
 - **A supported-locale check that refuses with the reason.** `/uk` is a
   different markup generation, `/us` answered 403 from Akamai; the site's own
   hreflang set lists exactly `ru-ru` and `ru-ua`.
@@ -36,7 +56,7 @@ justified the change.
   preflight, `.env` loading with documented precedence, the Fingerprint API
   client, and a run-to-run diff keyed on the model code.
 - **Run metadata sidecar** (`<out>.meta.json`), the family exit-code
-  contract, `--concurrency`, a 309-check offline suite, `.github/ci_checks.py`
+  contract, `--concurrency`, a 346-check offline suite, `.github/ci_checks.py`
   invoked from both CI and the suite, a Docker image that carries no browser
   because the primary engine needs none, and a daily canary.
 
@@ -69,8 +89,10 @@ justified the change.
 
 ### Verified live (2026-09-21)
 
-- The catalogue API: 3 pages, 36 products, `totalCount` 203, exit 0, from an
-  ordinary connection with no credential of any kind.
+- The catalogue API: `/ru/televisions` end to end — 5 pages, all 50 products
+  the category pages through, exit 0, from an ordinary connection with no
+  credential of any kind; `/ua/televisions` likewise, 4 pages and 41
+  products under its own `categoryId` and UAH.
 - `?page=` on the category URL: pages 1, 2 and 3 each served a different set
   of grid models.
 - `/ua` runs the same platform as `/ru`; `/uk` does not; `/us` answered 403.

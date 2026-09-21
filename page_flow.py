@@ -19,10 +19,11 @@ letting the three drift:
 The decision is DATA (`STATE_POLICY`), not three copies of an if-chain.
 
 **The page NUMBER is part of the classification here, which is unusual.**
-Past the end of a category the site answers 200 with an empty grid and its
-own `totalCount: 0` — the same shape as a category that is genuinely empty.
-Measured 2026-09-21: `/ru/televisions` page 1 reports `totalCount: 203`,
-page 99 reports 0 products and `totalCount: 0`. Only the page number tells
+Past the end of a category the site answers 200 with an empty grid and a
+collapsed pagination block — the same shape as a category that is genuinely
+empty. Measured 2026-09-21: `/ru/televisions` page 1 reports 50 products in
+5 pages, page 99 reports 0 products and `pageInfo: {"view": "N",
+"pageCount": 0}`. Only the page number tells
 "this category has nothing" from "you have run off the end of it", and the
 two are different answers: one is exit 4, the other is a complete run.
 
@@ -38,6 +39,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from product_parser import (MIN_ASSET_REFERENCES, asset_reference_count,
+                            has_category_machinery,
                             count_cards, detect_bot_challenge)
 
 CONTENT = "content"
@@ -143,6 +145,11 @@ def classify(html: Optional[str], status_code: Optional[int] = None,
     `record_count`/`total_results` come from the catalogue API when the
     caller used it; a browser engine passes neither and the grid is counted
     out of `html` instead.
+
+    `url` is accepted, and deliberately unused: every engine calls this with
+    the same keywords, and the classification is a property of the RESPONSE,
+    never of the address it was asked for. Dropping the parameter would only
+    move the same "which page was this?" bookkeeping into five callers.
     """
     html = html or ""
     cards = count_cards(html) if html else 0
@@ -163,6 +170,25 @@ def classify(html: Optional[str], status_code: Optional[int] = None,
         return PageState(BLOCKED, f"a refusal page from {vendor}", vendor=vendor,
                          status_code=status_code)
 
+    if record_count is not None:
+        # The caller read the catalogue API, and the API answered with zero
+        # products. Everything below this line weighs HTML — asset paths, a
+        # challenge page's wording — and a JSON payload carries none of it,
+        # so running those tests here would call every empty page a block.
+        if page_num > 1:
+            return PageState(EXHAUSTED,
+                             f"the catalogue API returns no products on page "
+                             f"{page_num} — past the end of this category",
+                             total_results=total_results, status_code=status_code)
+        return PageState(EMPTY,
+                         "the catalogue API reports no products in this category",
+                         total_results=total_results, status_code=status_code)
+
+    if not html:
+        return PageState(UNPAINTED,
+                         "nothing to read yet — the response was empty",
+                         status_code=status_code)
+
     assets = asset_reference_count(html)
     if assets < MIN_ASSET_REFERENCES:
         return PageState(
@@ -172,17 +198,24 @@ def classify(html: Optional[str], status_code: Optional[int] = None,
             f"built by the site — an interstitial or the browser's own error "
             f"page", vendor="unknown", status_code=status_code)
 
-    # Served, by the site, with no products on it. Which of the two that is
-    # depends on the page number — see the module docstring.
+    if not has_category_machinery(html):
+        # Built out of LG's own assets, but without the grid's own machinery
+        # — the shell, still to paint. Calling this an empty category would
+        # publish "this category holds no products" about a page that has
+        # not finished rendering; the engines wait once and read again.
+        return PageState(UNPAINTED,
+                         "the site's own assets are here but the category "
+                         "grid is not in the document yet — the shell, still "
+                         "to paint", status_code=status_code)
+
+    # Served, by the site, with the grid present and no products in it.
+    # Which of the two that is depends on the page number — see the module
+    # docstring.
     if page_num > 1:
         return PageState(EXHAUSTED,
                          f"page {page_num} is past the end of this category",
                          total_results=total_results, card_count=cards,
                          status_code=status_code)
-    if html:
-        return PageState(EMPTY, "page 1 of this category holds no products",
-                         total_results=total_results, card_count=cards,
-                         status_code=status_code)
-    return PageState(UNPAINTED,
-                     "nothing to read yet — the response was empty",
+    return PageState(EMPTY, "page 1 of this category holds no products",
+                     total_results=total_results, card_count=cards,
                      status_code=status_code)
