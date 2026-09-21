@@ -1,0 +1,7 @@
+# The Selenium engine. Needs a chromedriver on PATH matching your Chrome;
+# Selenium 4.6+ downloads one itself through Selenium Manager.
+#
+# Two limits are real and are stated in selenium_scraper.py's docstring:
+# Selenium cannot authenticate a proxy, and it cannot use an authenticated
+# remote CDP endpoint. Use another engine for either.
+selenium>=4.15.0

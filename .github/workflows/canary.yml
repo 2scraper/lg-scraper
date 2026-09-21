@@ -1,0 +1,152 @@
+name: canary
+
+# tests.yml deliberately never touches lg.com, which leaves a real gap: a
+# change to the site itself only shows up when a user hits it, while the
+# offline badge stays green. This is the other half — one real run a day
+# against a known-good filtered URL.
+#
+# --pages 3, not 1: with one page pagination is never exercised, and
+# pagination is precisely where this family's failure mode lives. Every page
+# after the first is a CONSTRUCTED request — `page=N` sent to the site's own
+# catalogue API — so if that convention changes the run must go red rather
+# than return page 1 three times and report success.
+on:
+  schedule:
+    # Off the hour, so it is not competing with every other cron job for
+    # runner availability.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  live-run:
+    runs-on: ubuntu-latest
+    # `secrets` is not available in a job-level `if`, so presence is tested
+    # through job env and read in each step's `if`.
+    env:
+      HAS_PROXY: ${{ secrets.LG_PROXY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the catalogue engine
+        # No browser: on this site the primary engine talks to the site's own
+        # API over plain HTTPS, which is also what makes this canary cheap
+        # enough to run daily.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Scrape a real, known-good filtered listing
+        id: run
+        # The proxy goes through the ENVIRONMENT, never a commented-out
+        # --proxy line: env_config.py already reads LG_PROXY, an unset
+        # secret arrives as an empty string which the loader treats as unset,
+        # so this one line is correct with and without it — and the credential
+        # never reaches a command line.
+        #
+        # set +e: GitHub Actions runs `run:` steps under `bash -e`, so without
+        # it a non-zero exit aborts the step before the exit code can be
+        # captured. continue-on-error does not change that; it stops the step
+        # failing the job, not the shell's errexit.
+        continue-on-error: true
+        env:
+          LG_PROXY: ${{ secrets.LG_PROXY }}
+        run: |
+          set +e
+          python3 catalog_client.py \
+            --url "https://www.lg.com/ru/televisions" \
+            --pages 3 --out canary_run --dump-html canary_run.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Interpret the exit code
+        run: |
+          code="${{ steps.run.outputs.exit_code }}"
+          case "$code" in
+            0) echo "OK — listings parsed from a live run." ;;
+            3) if [ "${{ env.HAS_PROXY }}" = "true" ]; then
+                 echo "::error::Blocked before parsing (exit 3) even through the configured proxy — this looks like a site-side change."
+                 exit 1
+               else
+                 echo "::notice::Blocked before parsing (exit 3) from a bare GitHub runner, which is a datacentre address. lg.com served this URL from an ordinary connection on 2026-09-19, so this is more likely the runner's IP than a site change. Set the LG_PROXY secret to check it properly."
+                 exit 0
+               fi ;;
+            4) echo "::error::Ran fine but parsed 0 listings (exit 4) on a URL known to have hundreds — this is the shape a real site-side break takes." ; exit 1 ;;
+            6) echo "::error::Partial run (exit 6) — see the sidecar's stop_reason. 'pagination_not_addressable' means the ?page[number]= convention has stopped working." ; exit 1 ;;
+            *) echo "::error::Unexpected exit code $code (see the step above)." ; exit 1 ;;
+          esac
+
+      - name: Sanity-check the scraped data
+        # Exit 0 only means some listings were written; it says nothing about
+        # whether the columns are populated.
+        if: steps.run.outputs.exit_code == '0'
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          from pathlib import Path
+
+          PAGES_REQUESTED = 3
+          # 12 products per page, so three pages is 36. The floor is set
+          # below that rather than tracking it; the category itself reported
+          # 203 products on 2026-09-21.
+          MIN_PRODUCTS = 30
+
+          rows = json.loads(Path("canary_run.json").read_text())
+          meta = json.loads(Path("canary_run.meta.json").read_text())
+          fail = []
+
+          if len(rows) < MIN_PRODUCTS:
+              fail.append(f"only {len(rows)} products, expected at least {MIN_PRODUCTS}")
+          if meta.get("status") != "complete":
+              fail.append(f"run status is {meta.get('status')!r}, not 'complete'")
+          if meta.get("pages_completed", 0) < PAGES_REQUESTED:
+              fail.append(f"stopped after {meta.get('pages_completed')} of "
+                          f"{PAGES_REQUESTED} pages (stop_reason="
+                          f"{meta.get('stop_reason')!r})")
+          # The check the whole --pages 3 exists for.
+          if meta.get("total_results", 0) < 50:
+              fail.append(f"the category reports only "
+                          f"{meta.get('total_results')} products in total — "
+                          f"either the catalogue shrank or the categoryId "
+                          f"read off the page is no longer the right one")
+          if len({r["sku"] for r in rows}) != len(rows):
+              fail.append("duplicate skus across pages")
+          if len({(r["page"], r["position"]) for r in rows}) != len(rows):
+              fail.append("page+position is not unique — the page number is "
+                          "not being threaded into the parser")
+
+          named = sum(1 for r in rows if r.get("title") and r.get("sku"))
+          if rows and named / len(rows) < 0.99:
+              fail.append(f"only {named}/{len(rows)} rows have both a title "
+                          f"and a model code")
+          # Price is null on this platform by measurement, not by accident —
+          # the day that changes is worth knowing about rather than silently
+          # passing, so the canary says so instead of asserting a share.
+          priced = sum(1 for r in rows if r.get("price") is not None)
+          if priced:
+              print(f"::notice::{priced}/{len(rows)} rows now carry a price. "
+                    f"This platform published none on 2026-09-21 — the README "
+                    f"says so, and it now needs updating.")
+          for line in fail:
+              print(f"::error::{line}")
+          sys.exit(1 if fail else 0)
+          EOF
+
+      - name: Upload run artefacts
+        # Always, not just on failure: a run that returns the WRONG number of
+        # listings with no error is exactly the regression that needs the
+        # actual bytes the parser saw.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-run-${{ github.run_id }}
+          path: |
+            canary_run.json
+            canary_run.csv
+            canary_run.meta.json
+            canary_run.json*
+            canary_run_page*_debug.*
+          if-no-files-found: ignore
+          retention-days: 14

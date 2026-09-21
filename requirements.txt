@@ -1,0 +1,12 @@
+# Core — always install this first. It is everything the parser, the output
+# writers, the Scraper API engine and the whole offline suite need.
+#
+#     pip install -r requirements.txt
+#
+# Then ONE engine, from its own file. Do not install more than one into the
+# same environment: playwright and pyppeteer pin mutually unsatisfiable pyee
+# versions, and pyppeteer and selenium collide on urllib3. They do run side by
+# side in practice, but `pip check` reports the conflict and pip may resolve
+# it by downgrading something you wanted. Use a virtualenv per engine.
+beautifulsoup4>=4.12.0
+requests>=2.31.0

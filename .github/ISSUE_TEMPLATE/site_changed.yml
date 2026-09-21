@@ -1,0 +1,64 @@
+name: Site changed / selectors broke
+description: LG changed something and the parser no longer matches.
+labels: ["site-change"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most common way a scraper stops working, and it is worth its
+        own report because the fix is different from a code bug: something on
+        lg.com moved.
+
+        Useful to know before filing: `catalog_client.py` reads **the site's
+        own catalogue API** (`retrieveCategoryProductList`, whose parameters
+        it takes from the `#categoryFilterForm` on the page), while the
+        browser engines read **the rendered grid** (`.product-list-box`,
+        microdata plus `data-model-*`). The `price_source` column on every
+        row says which one produced it — `api` or `dom` — so a run's own
+        output narrows the fix before you look at anything.
+
+  - type: dropdown
+    id: what_broke
+    attributes:
+      label: What stopped matching
+      options:
+        - Products (0 rows on a page that visibly has products)
+        - A specific field is null or wrong (title, model code, size, year)
+        - Pagination stops early or repeats a page
+        - A locale is refused that should be supported
+        - The captcha detector finds nothing on a page that has one
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: url
+    attributes:
+      label: URL
+      description: The exact listing URL you ran.
+      placeholder: "https://www.lg.com/ru/televisions"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence from the page
+      description: |
+        Whichever of these you can get. A capture beats a description.
+
+        - Run `catalog_client.py --dump-html out.json`, then:
+          `python3 -c "import json,product_parser as p; d=json.load(open('out.json')); print(len(p.api_products(d)), p.api_total_count(d))"`
+          — that is (products in the response, the category's own total).
+        - Or, for the grid path: `python3 -c "import product_parser as p; print(p.count_cards(open('dump.html').read()))"`.
+        - For a field problem: the value you got, and the value on the page.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: >-
+        Whether it reproduces on a second engine, and when it last worked.

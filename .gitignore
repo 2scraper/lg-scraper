@@ -1,0 +1,30 @@
+# A scraper's own output is large, machine-specific and stale by the time
+# anyone reads it. The two committed samples are the exception.
+*.json
+*.csv
+!sample_output.json
+!sample_output.csv
+lg_products.*
+*.meta.json
+*_debug.html
+*_debug.png
+live_results/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.fingerprint_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.log
+.env
+*.key
+secrets*

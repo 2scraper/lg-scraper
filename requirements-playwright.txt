@@ -1,0 +1,4 @@
+# The primary engine. After installing this, fetch the browser itself:
+#     playwright install chromium
+# Not needed when you run against --cdp-endpoint: that browser is remote.
+playwright>=1.40.0

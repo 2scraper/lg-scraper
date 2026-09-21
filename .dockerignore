@@ -1,0 +1,17 @@
+.git
+.github
+captures
+legacy
+tests
+smoke_test.py
+*.json
+*.csv
+*.meta.json
+*_debug.html
+*_debug.png
+.env
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
