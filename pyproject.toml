@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lg-scraper"
-version = "0.2.0"
+version = "0.2.1"
 description = "A working scraper for lg.com category pages — the site's own catalogue API, plus three browser engines."
 readme = "README.md"
 license = "MIT"
