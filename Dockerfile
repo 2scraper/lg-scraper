@@ -17,8 +17,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# From the lock, hash-checked: the image carries exactly the versions CI
+# tested, and a tampered download fails the build instead of shipping.
+COPY requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # The entrypoint's transitive local imports, and nothing else. smoke_test.py's
 # own check compares this list against the real import graph: every repo in

@@ -5,6 +5,37 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
+## [Unreleased]
+
+### Security
+
+- **Every GitHub Action is pinned to a commit SHA** (`checkout` v4.4.0,
+  `setup-python` v5.6.0, `upload-artifact` v4.6.2), with the release as a
+  comment. A tag can be moved to another commit — the March 2025
+  `tj-actions/changed-files` compromise did exactly that — and the canary
+  runs with the `LG_PROXY` secret in its environment. Dependabot now proposes
+  updates to the pins.
+- **Hashed lock files** for the core and each engine (`requirements*.lock`,
+  plus `.github/requirements-ci.lock` for pytest and pip-audit), resolved for
+  Python 3.9+. CI, the canary and the Docker image install only these, with
+  `--require-hashes`; the unpinned `pip install --upgrade pip` and
+  `pip install pytest` steps are gone.
+- **`audit.yml`: pip-audit over every lock**, on each change and weekly. It
+  found five urllib3 1.26.20 advisories in the pyppeteer lock, fixed only in
+  urllib3 2.x, which pyppeteer forbids; they are ignored by ID and documented
+  in the README, so any new advisory still fails.
+- `smoke_test.py` asserts all of the above, so a later edit cannot quietly
+  unpin an action or add an unlocked install.
+
+### Not changed, and why
+
+- **Docker image digest and a non-root user** — deferred until the image runs
+  as a service; a non-root user breaks the documented
+  `-v "$PWD/out:/out"` mount on Linux.
+- **The `.txt` files keep their `>=` floors** — they are the specification a
+  person edits and what `pyproject.toml` mirrors; the locks are generated
+  from them.
+
 ## [0.2.0] — 2026-09-25
 
 > **Behaviour change for anyone reading the sidecar.** A run that fetched
