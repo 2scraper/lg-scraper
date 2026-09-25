@@ -2882,6 +2882,101 @@ def check_env_report_hides_every_credential():
 
 
 
+# ---------------------------------------------------------------------------
+# Supply chain: every download CI and the image make is pinned
+# ---------------------------------------------------------------------------
+_LOCKS = {
+    # lock -> the requirement files it was compiled from (its header says so)
+    "requirements.lock": ["requirements.txt"],
+    "requirements-playwright.lock": ["requirements.txt", "requirements-playwright.txt"],
+    "requirements-puppeteer.lock": ["requirements.txt", "requirements-puppeteer.txt"],
+    "requirements-selenium.lock": ["requirements.txt", "requirements-selenium.txt"],
+    ".github/requirements-ci.lock": ["requirements.txt", ".github/requirements-ci.txt"],
+}
+
+
+def _version(text):
+    return tuple(int(n) for n in re.findall(r"\d+", text)[:4])
+
+
+def _lock_pins(path):
+    """{name: [(version, hash count)]} — a universal lock may pin one
+    package twice, under different python_version markers."""
+    pins, current = {}, None
+    for line in open(path, encoding="utf-8"):
+        m = re.match(r"([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
+        if m:
+            current = [_version(m.group(2)), 0]
+            pins.setdefault(m.group(1).lower().replace("_", "-"), []).append(current)
+        elif current is not None and "--hash=sha256:" in line:
+            current[1] += 1
+    return pins
+
+
+def check_supply_chain_is_pinned():
+    """A tag like `actions/checkout@v4` can be moved to another commit, and
+    `pip install -r requirements.txt` takes whatever PyPI serves that day.
+    Both are now pinned; these checks keep a later edit from quietly
+    unpinning either."""
+    print("\n[supply chain is pinned]")
+    workflows = sorted(os.path.join(REPO, ".github", "workflows", n)
+                       for n in os.listdir(os.path.join(REPO, ".github", "workflows"))
+                       if n.endswith((".yml", ".yaml")))
+    for path in workflows:
+        name = os.path.basename(path)
+        text = open(path, encoding="utf-8").read()
+        uses = re.findall(r"uses:\s*(\S+)(.*)", text)
+        loose = [u for u, rest in uses
+                 if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", u)
+                 or not re.search(r"#\s*v\d", rest)]
+        check(f"{name}: every action is pinned to a commit SHA with its release "
+              f"as a comment" + (f" (not: {loose})" if loose else ""), uses and not loose)
+        installs = [line.strip() for line in text.splitlines()
+                    if re.search(r"\bpip install\b", line) and not line.strip().startswith("#")]
+        unlocked = [i for i in installs
+                    if not re.search(r"--require-hashes -r [^ ]*(?:\$\{\{[^}]*\}\}[^ ]*)?\.lock\b", i)]
+        check(f"{name}: every pip install is from a hashed lock"
+              + (f" (not: {unlocked})" if unlocked else ""), not unlocked)
+        for lock in re.findall(r"-r (\S+\.lock)\b", text):
+            if "${{" not in lock:
+                check(f"{name}: {lock} exists", os.path.exists(os.path.join(REPO, lock)))
+
+    docker = open(os.path.join(REPO, "Dockerfile"), encoding="utf-8").read()
+    check("the image installs from requirements.lock with --require-hashes",
+          "--require-hashes -r requirements.lock" in docker
+          and "COPY requirements.lock" in docker)
+
+    for lock, sources in _LOCKS.items():
+        path = os.path.join(REPO, lock)
+        if not check(f"{lock} exists", os.path.exists(path)):
+            continue
+        header = open(path, encoding="utf-8").read().split("\n", 3)[1]
+        eq(f"{lock} was compiled from exactly its requirement files",
+           [t for t in header.split() if t.endswith(".txt")], sources)
+        check(f"{lock} is universal from the oldest supported Python",
+              "--universal" in header and "--python-version 3.9" in header)
+        pins = _lock_pins(path)
+        unhashed = [n for n, vs in pins.items() if any(h == 0 for _, h in vs)]
+        check(f"{lock}: every pin carries a hash"
+              + (f" (not: {unhashed})" if unhashed else ""), pins and not unhashed)
+        for source in sources:
+            for line in open(os.path.join(REPO, source), encoding="utf-8"):
+                req = line.split("#")[0].strip()
+                if not req:
+                    continue
+                m = re.fullmatch(r"([A-Za-z0-9_.-]+)\s*>=\s*([\w.]+)", req)
+                if not check(f"{source}: {req!r} is a plain '>=' floor the lock "
+                             f"check can read", m):
+                    continue
+                name = m.group(1).lower().replace("_", "-")
+                floor = _version(m.group(2))
+                versions = [v for v, _ in pins.get(name, [])]
+                check(f"{lock} pins {name} at or above {m.group(2)}"
+                      + (f" (has {versions})" if versions else " (missing)"),
+                      versions and all(v >= floor for v in versions))
+
+
+
 def main() -> int:
     logging.basicConfig(level=logging.ERROR)
     print("lg-scraper offline suite")
@@ -2901,6 +2996,7 @@ def main() -> int:
                   check_output_is_written_atomically,
                   check_numeric_flags_are_validated,
                   check_env_report_hides_every_credential,
+                  check_supply_chain_is_pinned,
                   check_engine_parity,
                   check_readiness_wait_is_csp_safe,
                   check_engine_imports_driver_at_module_level,

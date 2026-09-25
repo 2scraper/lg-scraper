@@ -1,0 +1,4 @@
+# CI-only tools, locked with the core in requirements-ci.lock beside this
+# file — see CONTRIBUTING.md. Not something a user of the scraper installs.
+pytest>=7.0
+pip-audit>=2.7
