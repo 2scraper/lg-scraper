@@ -5,7 +5,18 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
-## [Unreleased]
+## [0.2.1] — 2026-09-25
+
+No change to what the scraper does. What changes is how it is installed and
+built: CI, the canary and the Docker image now install exact, hash-checked
+versions, and every GitHub Action is pinned by commit. If you install with
+`pip install -r requirements.txt`, nothing changes for you; for the versions
+CI tested, install the matching `requirements*.lock` (see the README).
+
+> **pyppeteer users:** that engine's environment carries urllib3 1.26.20,
+> which has five advisories fixed only in urllib3 2.x — pyppeteer forbids
+> it. One lets a cross-origin redirect forward `Proxy-Authorization`. Prefer
+> Playwright when running with proxy credentials.
 
 ### Security
 
