@@ -48,9 +48,10 @@ import requests
 import env_config
 import page_flow
 from output_writer import dedupe_by_sku, finish_run
-from product_parser import (api_page_count, api_products, api_row_count,
-                            api_variant_count, catalog_payload,
-                            category_from_url, declared_currency, page_url,
+from product_parser import (api_endpoint_reason, api_page_count, api_products,
+                            api_row_count, api_variant_count, catalog_payload,
+                            category_from_url, declared_currency,
+                            not_an_lg_url_reason, page_url,
                             parse_catalog_form, rows_from_api,
                             unsupported_locale_reason)
 from proxy_pool import (ROTATE_MODES, ProxyError, check_exit_or_raise,
@@ -83,15 +84,40 @@ def _session(pool) -> requests.Session:
     return session
 
 
+# Redirect hops followed for the category page. lg.com answers /ru/televisions
+# directly; a handful covers a trailing-slash or locale hop without letting a
+# loop run on.
+MAX_REDIRECTS = 5
+
+
 def fetch_category_page(session: requests.Session, url: str,
                         timeout: float) -> Tuple[Optional[str], Optional[int]]:
-    """GET the category page. Returns (html, status) — never raises for a refusal."""
-    try:
-        response = session.get(url, timeout=timeout)
-    except requests.RequestException as e:
-        logger.error("Could not fetch %s: %s", url, redact_secret_patterns(str(e)))
-        return None, None
-    return response.text, response.status_code
+    """GET the category page. Returns (html, status) — never raises for a refusal.
+
+    Redirects are followed by hand so that EVERY hop is checked against the
+    same rule as --url: an lg.com page that redirected elsewhere would
+    otherwise hand this engine a form written by someone else, and the POST
+    that follows would go wherever that form says.
+    """
+    for _ in range(MAX_REDIRECTS + 1):
+        try:
+            response = session.get(url, timeout=timeout, allow_redirects=False)
+        except requests.RequestException as e:
+            logger.error("Could not fetch %s: %s", url, redact_secret_patterns(str(e)))
+            return None, None
+        if not response.is_redirect:
+            return response.text, response.status_code
+        target = requests.compat.urljoin(url, response.headers.get("Location", ""))
+        reason = not_an_lg_url_reason(target)
+        if reason:
+            logger.error("%s redirected to an address this engine will not "
+                         "follow (%s) — stopping before anything is POSTed.",
+                         url, reason)
+            return None, None
+        url = target
+    logger.error("More than %d redirects fetching the category page — giving up.",
+                 MAX_REDIRECTS)
+    return None, None
 
 
 def fetch_api_page(session: requests.Session, form: dict, page_num: int,
@@ -100,7 +126,11 @@ def fetch_api_page(session: requests.Session, form: dict, page_num: int,
     try:
         response = session.post(form["url"], data=catalog_payload(form, page_num),
                                 headers={**AJAX_HEADERS, "Referer": referer},
-                                timeout=timeout)
+                                timeout=timeout,
+                                # A redirect is not the API answering: it
+                                # comes back as a non-200 and is retried,
+                                # never followed to wherever it points.
+                                allow_redirects=False)
     except requests.RequestException as e:
         logger.error("Catalogue API request failed: %s",
                      redact_secret_patterns(str(e)))
@@ -147,6 +177,15 @@ def scrape(args) -> int:
                      "listing, or the site has changed the form this engine "
                      "reads its parameters from — use a browser engine "
                      "meanwhile, they read the rendered grid.")
+        return 4
+    reason = api_endpoint_reason(form["url"], args.url)
+    if reason:
+        _dump(args, 1, html)
+        logger.error("The page's #categoryFilterForm asks for a POST to %s, "
+                     "which this engine refuses: %s. The catalogue API has "
+                     "always lived under the page's own /mkt/ajax/ — a form "
+                     "pointing anywhere else is not one to follow.",
+                     form["url"], reason)
         return 4
     currency = declared_currency(html)
     logger.info("Catalogue %s via %s (currency declared: %s)",
@@ -258,7 +297,7 @@ def scrape(args) -> int:
                       blocked=False, stop_reason=stop_reason,
                       pages_requested=args.pages, pages_completed=pages_completed,
                       pages_failed=pages_failed, total_results=total_results,
-                      addressable=True,
+                      addressable=True, page_count=page_count,
                       start_url=args.url, final_url=page_url(args.url, pages_completed))
 
 
@@ -279,16 +318,16 @@ def parse_args():
     p.add_argument("--category", default=None,
                    help="Label to tag output rows with. Defaults to the "
                         "category segment of the URL.")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=env_config.PAGES, default=1,
                    help="Number of pages to fetch (12 products each)")
-    p.add_argument("--delay", type=float, default=1.0,
+    p.add_argument("--delay", type=env_config.SECONDS, default=1.0,
                    help="Delay between pages, seconds (default 1.0)")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=env_config.ATTEMPTS, default=3,
                    help="Attempts per page before giving up (default 3); the "
                         "pause between attempts doubles each time.")
-    p.add_argument("--retry-delay", type=float, default=2.0,
+    p.add_argument("--retry-delay", type=env_config.SECONDS, default=2.0,
                    help="Seconds before the first retry (default 2.0)")
-    p.add_argument("--timeout", type=float, default=30.0,
+    p.add_argument("--timeout", type=env_config.TIMEOUT, default=30.0,
                    help="Per-request timeout, seconds (default 30)")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="lg_products", help="Output file prefix")

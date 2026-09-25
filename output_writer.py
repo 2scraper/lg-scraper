@@ -31,6 +31,8 @@ makes the day LG turns prices on visible in a diff instead of invisible.
 
 import csv
 import json
+import os
+import tempfile
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Optional, List, Set
@@ -105,25 +107,51 @@ def dedupe_by_sku(products: List[Product], seen: Set[str]) -> List[Product]:
     return fresh
 
 
+def _atomic_write(path: str, write, newline: Optional[str] = None) -> None:
+    """Write `path` via a temporary file in the same directory, then rename.
+
+    Opening the real path with "w" truncates it first, so a run killed while
+    writing leaves last night's good output as a half-written file — exactly
+    what `save` refusing to write an empty result exists to prevent. A rename
+    within one directory is atomic: a reader sees the old file or the new
+    one, never a torn one. The parent directory is created, so `--out
+    results/tv` does not fail after every page has been fetched.
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".tmp-",
+                               suffix=os.path.basename(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+            write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_json(products: List[Product], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump([asdict(p) for p in products], f, ensure_ascii=False, indent=2)
+    _atomic_write(path, lambda f: json.dump([asdict(p) for p in products], f,
+                                            ensure_ascii=False, indent=2))
 
 
 def write_csv(products: List[Product], path: str) -> None:
     # An empty result still gets the header row. A zero-byte file makes a
     # consumer fail on read (no columns to parse) instead of reading a valid
     # table with zero rows.
-    if not products:
-        with open(path, "w", encoding="utf-8", newline="") as f:
-            csv.DictWriter(f, fieldnames=list(asdict(Product()).keys())).writeheader()
-        return
-    fieldnames = list(asdict(products[0]).keys())
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    fieldnames = list(asdict(products[0] if products else Product()).keys())
+
+    def write(f):
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for p in products:
             writer.writerow(asdict(p))
+    _atomic_write(path, write, newline="")
 
 
 # Exit code used when a run completes but produced nothing. Distinct from 1
@@ -157,8 +185,7 @@ def write_run_meta(out_prefix: str, meta: dict) -> str:
     un-fetched pages being reported as delisted listings.
     """
     path = f"{out_prefix}.meta.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    _atomic_write(path, lambda f: json.dump(meta, f, ensure_ascii=False, indent=2))
     print(f"[+] Wrote run metadata -> {path} (status={meta.get('status')})")
     return path
 
@@ -167,14 +194,23 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
              pages_completed: int, start_url: str, final_url: str,
              products: int, pages_failed: Optional[List[int]] = None,
              total_results: Optional[int] = None,
-             addressable: Optional[bool] = None) -> dict:
+             addressable: Optional[bool] = None,
+             page_count: Optional[int] = None) -> dict:
     """Build the metadata dict for a finished run.
 
     `status` is the field a consumer branches on:
-      complete — every requested page was fetched, or the listing genuinely
-                 ran out (nothing more existed to get)
+      complete — the WHOLE listing was read: the site ran out of products,
+                 every page it reported was fetched, or the product count
+                 reached its own total
+      limited  — every page asked for was fetched, but --pages stopped the
+                 run before the listing was shown to end. A successful run
+                 (exit 0) and a sample, never an assortment snapshot
       partial  — rows were gathered, then the run stopped early
       failed   — nothing was gathered at all
+
+    `listing_complete` is the same fact as `status == "complete"`, kept as a
+    boolean so a consumer does not have to know every status word, and
+    `scope` says whether the run was a full listing or a sample of it.
 
     `pages_failed` lists the pages that did not yield data, BY NUMBER: a count
     stops being a description once pages can be fetched independently and page
@@ -190,14 +226,20 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
     --concurrency was refused for this listing.
     """
     return {
+        "schema_version": 2,
         "source": SOURCE,
         "status": status,
+        "listing_complete": status == "complete",
+        "scope": "limited_pages" if status == "limited" else "full_listing",
         "stop_reason": stop_reason,
         "pages_requested": pages_requested,
         "pages_completed": pages_completed,
         "pages_failed": pages_failed or [],
         "products": products,
         "total_results": total_results,
+        "page_count": page_count,
+        "completeness_ratio": (round(products / total_results, 4)
+                               if total_results else None),
         "addressable": addressable,
         "start_url": start_url,
         "final_url": final_url,
@@ -234,16 +276,38 @@ def save(products: List[Product], out_prefix: str, fmt: str,
     return 0 if products else EXIT_NO_PRODUCTS
 
 
-# Stop reasons that mean the run saw everything there was to see. Anything
-# else ended the page loop early, so the result is only a partial view.
+# Stop reasons that PROVE the run saw everything there was to see — each is
+# a property of the DATA: the site's own empty grid past the end of the
+# category, a page that added nothing new, a category with no results at all.
+# There is deliberately no selector-based entry: a missing "next" control is
+# a property of markup, an exhausted catalogue is a property of the data.
 #
-# "no_new_products" and "listing_exhausted" are both properties of the DATA —
-# a page that added nothing new, and the site's own empty grid past the end of
-# the category. There is deliberately no selector-based entry: a missing
-# "next" control is a property of markup, an exhausted catalogue is a property
-# of the data.
-COMPLETE_STOP_REASONS = ("completed", "listing_exhausted", "no_new_products",
-                         "no_results")
+# "completed" is deliberately NOT here. Engines start from it and keep it
+# when the page loop simply ran out of --pages, which says the REQUESTED
+# range was read, not that the listing was. Until v0.2.0 it counted as
+# complete, so `--pages 2` of a 4-page category wrote status=complete and
+# diff_runs.py reported the unread half as 24 delisted models. finish_run now
+# decides what "completed" means from the evidence — see _range_covers_listing.
+COMPLETE_STOP_REASONS = ("listing_exhausted", "no_new_products", "no_results")
+
+# What the loop reports when it used up --pages: a finished task, not a
+# failed one, so it stays exit 0 — but not a complete listing either.
+RANGE_DONE = "completed"
+
+
+def _range_covers_listing(products: int, pages_completed: int,
+                          total_results: Optional[int],
+                          page_count: Optional[int]) -> bool:
+    """Did reading the requested pages happen to read the whole listing?
+
+    Two proofs, both the site's own numbers: every page it said it has was
+    fetched, or the distinct products reached the total it pages through.
+    Without either, a run that stopped because --pages ran out has no
+    evidence the next page was empty, and must not claim it was.
+    """
+    if page_count is not None and pages_completed >= page_count:
+        return True
+    return total_results is not None and total_results > 0 and products >= total_results
 
 
 def finish_run(products: List[Product], out_prefix: str, fmt: str,
@@ -252,7 +316,8 @@ def finish_run(products: List[Product], out_prefix: str, fmt: str,
                start_url: str, final_url: str,
                pages_failed: Optional[List[int]] = None,
                total_results: Optional[int] = None,
-               addressable: Optional[bool] = None) -> int:
+               addressable: Optional[bool] = None,
+               page_count: Optional[int] = None) -> int:
     """Write output + the run-metadata sidecar; return the exit code.
 
     Shared by all engines so the status/exit-code mapping cannot drift between
@@ -262,14 +327,38 @@ def finish_run(products: List[Product], out_prefix: str, fmt: str,
     Otherwise a failed run would leave a "status": "failed" sidecar next to
     the previous run's still-intact good output (which `save` deliberately
     does not overwrite) — the two files would contradict each other.
+
+    Order matters when it IS written: the old sidecar is removed first and the
+    new one is written last. A run killed between the two then leaves new
+    data with no sidecar — which diff_runs.py refuses without --force —
+    rather than new data beside an old sidecar vouching for it.
     """
+    limited = False
+    if stop_reason == RANGE_DONE:
+        if _range_covers_listing(len(products), pages_completed,
+                                 total_results, page_count):
+            stop_reason = "listing_exhausted"
+        else:
+            stop_reason, limited = "page_limit", True
     complete = stop_reason in COMPLETE_STOP_REASONS
-    rc = save(products, out_prefix, fmt, allow_empty=allow_empty)
     wrote_output = bool(products) or allow_empty
 
     if wrote_output:
-        status = "complete" if (products and complete) else (
-            "partial" if products else "failed")
+        try:
+            os.unlink(f"{out_prefix}.meta.json")
+        except FileNotFoundError:
+            pass
+    rc = save(products, out_prefix, fmt, allow_empty=allow_empty)
+
+    if wrote_output:
+        if products and complete:
+            status = "complete"
+        elif products and limited:
+            status = "limited"
+        elif products:
+            status = "partial"
+        else:
+            status = "failed"
         if not products and allow_empty and complete:
             # An explicitly empty result that the site itself reported as
             # empty is a complete answer, not a failure.
@@ -278,13 +367,21 @@ def finish_run(products: List[Product], out_prefix: str, fmt: str,
             status=status, stop_reason=stop_reason,
             pages_requested=pages_requested, pages_completed=pages_completed,
             pages_failed=pages_failed, total_results=total_results,
-            addressable=addressable,
+            addressable=addressable, page_count=page_count,
             start_url=start_url, final_url=final_url, products=len(products)))
 
     if not products:
         # Nothing gathered at all: a challenge outranks "empty listing",
         # because it says something stood between the run and the content.
         return EXIT_BLOCKED if blocked else rc
+    if limited:
+        total = f" of the {total_results} the listing holds" if total_results else ""
+        print(f"[i] Limited run: read the {pages_completed} page(s) asked for, "
+              f"{len(products)} product(s){total}. That is a sample, not the "
+              f"whole listing — the sidecar says status=limited, and "
+              f"diff_runs.py will not treat it as an assortment snapshot. "
+              f"Raise --pages past the listing's end for a full one.")
+        return rc
     if not complete:
         print(f"[!] Partial run: stopped after {pages_completed} of "
               f"{pages_requested} page(s) ({stop_reason}). The output holds "

@@ -193,6 +193,76 @@ def locale_from_url(url: str) -> Optional[str]:
     return parts[0].lower() if parts else None
 
 
+def is_lg_host(host: Optional[str]) -> bool:
+    """`lg.com` itself or a subdomain of it — and nothing that merely ENDS in it.
+
+    A bare `endswith("lg.com")` accepted `notlg.com` and `evillg.com`. The
+    host is compared after urlparse has lowercased it, so an IDN lookalike
+    arrives as its own `xn--` label and matches neither form.
+    """
+    host = (host or "").lower()
+    return host == "lg.com" or host.endswith(".lg.com")
+
+
+def not_an_lg_url_reason(url: str) -> Optional[str]:
+    """Why `url` is not an https://…lg.com address we may fetch, or None.
+
+    The URL is user input, and everything else — the form we POST to, the
+    price endpoint — is derived from what that page serves. So the checks
+    are strict: HTTPS only, no userinfo (`https://user@…` has no business in
+    a category URL and hides what host is really meant), the default port,
+    and an lg.com host by the rule in is_lg_host.
+    """
+    parts = urlparse(url)
+    if parts.scheme != "https":
+        if not parts.scheme and not parts.netloc:
+            return (f"{url!r} carries no scheme — give the full address, e.g. "
+                    f"https://www.lg.com/ru/televisions")
+        return f"only https:// URLs are fetched, not {parts.scheme or 'none'}://"
+    if parts.username is not None or parts.password is not None:
+        return "the URL carries a user name or password, which lg.com never needs"
+    try:
+        port = parts.port
+    except ValueError:
+        return "the URL's port is not a number"
+    if port not in (None, 443):
+        return f"port {port} is not lg.com's HTTPS port"
+    if not is_lg_host(parts.hostname):
+        return f"{parts.hostname or 'an empty host'} is not lg.com"
+    return None
+
+
+# The catalogue endpoints a category page may point this engine at, per
+# locale. Measured 2026-09-21 on /ru and /ua: the form's action is
+# /{locale}/mkt/ajax/category/retrieveCategoryProductList and its price
+# endpoint /{locale}/mkt/ajax/priceSync/… — both under the page's own
+# /{locale}/mkt/ajax/. Anything else is a page asking to be POSTed somewhere
+# it never has been, which is refused rather than followed.
+_API_PATH_PREFIX = "/{locale}/mkt/ajax/"
+
+
+def api_endpoint_reason(endpoint: str, page_url_: str) -> Optional[str]:
+    """Why a form-supplied `endpoint` must not be called, or None.
+
+    The form comes from served HTML, so its `action` is untrusted: an
+    absolute action would otherwise turn "fetch this category" into "POST to
+    whatever the page names" — a server-side request forgery the moment this
+    CLI runs behind anything that takes a URL from someone else. Same origin
+    as the category page, and under that locale's /mkt/ajax/.
+    """
+    reason = not_an_lg_url_reason(endpoint)
+    if reason:
+        return reason
+    target, page = urlparse(endpoint), urlparse(page_url_)
+    if target.hostname != page.hostname:
+        return (f"it points at {target.hostname}, not at the page's own "
+                f"host {page.hostname}")
+    prefix = _API_PATH_PREFIX.format(locale=locale_from_url(page_url_) or "")
+    if not target.path.lower().startswith(prefix):
+        return f"its path is not under {prefix}"
+    return None
+
+
 def unsupported_locale_reason(url: str) -> Optional[str]:
     """Why this URL cannot be scraped, or None when it can.
 
@@ -200,9 +270,9 @@ def unsupported_locale_reason(url: str) -> Optional[str]:
     false and sends the reader hunting for a typo. These two are different
     platforms wearing the same domain.
     """
-    host = (urlparse(url).hostname or "").lower()
-    if host and not host.endswith("lg.com"):
-        return f"{host} is not lg.com"
+    reason = not_an_lg_url_reason(url)
+    if reason:
+        return reason
     locale = locale_from_url(url)
     if locale is None:
         return ("the URL carries no locale segment — this scraper needs a "
@@ -297,10 +367,16 @@ def parse_catalog_form(html: str, base_url: str) -> Optional[Dict[str, object]]:
             params[name] = field.get("value") or ""
     if not params.get("categoryId"):
         return None
+    # Nothing calls the price endpoint today, so an off-origin one is dropped
+    # rather than refused; the action IS called, and catalog_client refuses
+    # it through api_endpoint_reason before the first POST.
+    price_sync = (urljoin(base_url, form.get("data-price-sync-url"))
+                  if form.get("data-price-sync-url") else None)
+    if price_sync and api_endpoint_reason(price_sync, base_url):
+        price_sync = None
     return {
         "url": urljoin(base_url, action),
-        "price_sync_url": (urljoin(base_url, form.get("data-price-sync-url"))
-                           if form.get("data-price-sync-url") else None),
+        "price_sync_url": price_sync,
         "params": params,
     }
 

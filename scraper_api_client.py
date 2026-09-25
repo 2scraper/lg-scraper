@@ -287,12 +287,12 @@ def parse_args():
                    help="An lg.com/ru or lg.com/ua category URL. Required unless LG_URL is set.")
     p.add_argument("--category", default=None,
                    help="Label to tag output rows with. Defaults to what the URL says.")
-    p.add_argument("--pages", type=int, default=1, help="Number of pages to fetch")
-    p.add_argument("--delay", type=float, default=1.0,
+    p.add_argument("--pages", type=env_config.PAGES, default=1, help="Number of pages to fetch")
+    p.add_argument("--delay", type=env_config.SECONDS, default=1.0,
                    help="Delay between pages, seconds (default 1.0)")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="lg_products", help="Output file prefix")
-    p.add_argument("--timeout", type=int, default=60,
+    p.add_argument("--timeout", type=env_config.int_range(1, 600), default=60,
                    help=f"API-side task timeout in seconds (1-{MAX_API_TIMEOUT}, default 60)")
     p.add_argument("--cdp-url", default=None,
                    help="Route the fetch through an existing browser session over "
@@ -308,10 +308,10 @@ def parse_args():
                       help="Wait for a page load state instead of specific content")
     p.add_argument("--allow-empty", action="store_true",
                    help="Write output files even when 0 products were parsed.")
-    p.add_argument("--retries", type=int, default=1,
+    p.add_argument("--retries", type=env_config.EXTRA_ATTEMPTS, default=1,
                    help="Extra attempts if a challenge page comes back. Each "
                         "attempt is a separate billable task, so this defaults to 1.")
-    p.add_argument("--retry-delay", type=int, default=10,
+    p.add_argument("--retry-delay", type=env_config.SECONDS, default=10,
                    help="Seconds between retries (default 10)")
     p.add_argument("--dump-html", default=None,
                    help="Also write the raw returned HTML, on success as well as failure")

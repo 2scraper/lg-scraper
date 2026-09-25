@@ -13,8 +13,12 @@ Typical use is a scheduled re-run of one of the engines, kept under a dated
 filename, diffed against the previous one:
 
     python3 playwright_scraper.py --url "$URL" --out "tv_$(date +%F)"
-    python3 diff_runs.py --old "tv_$(ls -t tv_*.json | sed -n 2p)" \\
-                          --new "saas_$(date +%F).json" --out diff.json
+    python3 diff_runs.py --old "$(ls -t tv_*.json | grep -v meta | sed -n 2p)" \\
+                          --new "tv_$(date +%F).json" --out diff.json
+
+Both runs must be FULL listings: a `--pages N` run that stopped before the
+listing ended is written with status "limited", and is refused here — its
+unread pages would otherwise read as delisted models.
 
 Four buckets, each keyed on sku:
 
@@ -22,8 +26,8 @@ Four buckets, each keyed on sku:
   removed        — sku present in --old, absent from --new (discontinued, or simply
                    off this particular page of this run)
   changed        — sku present in both, with a different price,
-                   original_price, discount_pct, currency, status, sale
-                   method or monthly profit
+                   original_price, discount_pct, currency, status,
+                   model_year or rating
   source_changed — sku present in both with a different price, but also a
                    different price_source: one run read the catalogue API and
                    the other the rendered grid, so the two are not comparable
@@ -41,6 +45,7 @@ import json
 import re
 import sys
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 TRACKED_FIELDS = ("price", "original_price", "discount_pct", "currency",
                   "status", "model_year", "rating")
@@ -149,10 +154,8 @@ def _print_summary(result: dict) -> None:
 def _run_status(path: str) -> Tuple[Optional[str], Optional[dict]]:
     """Read the `<out>.meta.json` sidecar beside a run's JSON output.
 
-    Returns (status, meta), or (None, None) when there is no sidecar. Every
-    engine here writes one whenever it writes output, so a missing sidecar
-    means either output from an older version, or a run that wrote nothing —
-    in which case there is no file to diff either.
+    Returns (status, meta), or (None, None) when there is no readable
+    sidecar — which _check_comparable refuses, see there.
     """
     meta_path = re.sub(r"\.json$", "", path) + ".meta.json"
     try:
@@ -163,6 +166,22 @@ def _run_status(path: str) -> Tuple[Optional[str], Optional[dict]]:
     return meta.get("status"), meta
 
 
+def _listing_key(url: Optional[str]) -> Optional[str]:
+    """The listing a start URL names: host, path and filters, minus paging.
+
+    Two runs of the same category started from `?page=1` and from no
+    parameter at all are the same listing; `/ru/televisions` and
+    `/ru/refrigerators` are not, and diffing them reports one whole
+    catalogue as removed and the other as added.
+    """
+    if not url:
+        return None
+    parts = urlparse(url)
+    query = sorted((k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                   if k.lower() != "page")
+    return f"{(parts.hostname or '').lower()}{parts.path.rstrip('/').lower()}?{urlencode(query)}"
+
+
 def _check_comparable(args) -> bool:
     """Refuse an assortment diff between runs that are not both complete.
 
@@ -170,30 +189,53 @@ def _check_comparable(args) -> bool:
     3 of 10 is missing every listing on pages 4-10, and diffing it against
     yesterday's full run reports all of them as `removed` — reading as "these
     models were discontinued" when in fact they were simply never fetched.
+    The same holds for a `limited` run, which fetched every page it was
+    asked for and still stopped before the listing ended.
+
+    A MISSING sidecar is refused too. Every engine writes one whenever it
+    writes output, and writes it last, so no sidecar means output from
+    before sidecars existed or a run killed between the two files — neither
+    is evidence of a complete listing. And two complete runs of DIFFERENT
+    listings are refused, because every row would be added or removed.
+
     Prices of the SKUs both runs DID see are still comparable, which is why
     this is a refusal with a --force escape hatch rather than a hard error.
     """
     problems = []
+    metas = {}
     for label, path in (("--old", args.old), ("--new", args.new)):
         status, meta = _run_status(path)
+        metas[label] = meta
         if status is None:
-            continue  # no sidecar: nothing to check, see _run_status
-        if status != "complete":
+            problems.append(
+                f"{label} ({path}) has no readable .meta.json beside it, so "
+                f"nothing says the run read the whole listing")
+        elif status != "complete":
             problems.append(
                 f"{label} ({path}) was a {status!r} run — stopped after "
                 f"{meta.get('pages_completed')} of {meta.get('pages_requested')} "
-                f"page(s), reason {meta.get('stop_reason')!r}")
+                f"page(s), reason {meta.get('stop_reason')!r}"
+                + (f", {meta.get('products')} of {meta.get('total_results')} "
+                   f"product(s)" if meta.get("total_results") else ""))
+    old_meta, new_meta = metas["--old"], metas["--new"]
+    if old_meta and new_meta:
+        old_key = _listing_key(old_meta.get("start_url"))
+        new_key = _listing_key(new_meta.get("start_url"))
+        if old_key and new_key and old_key != new_key:
+            problems.append(
+                f"the two runs read different listings: "
+                f"{old_meta.get('start_url')} and {new_meta.get('start_url')}")
     if not problems:
         return True
 
-    print("[!] Refusing to diff: at least one run is not a complete view of "
-          "the listing, so listings that were never fetched cannot be told "
-          "apart from ones that were sold or delisted.")
+    print("[!] Refusing to diff: the two files are not both complete views of "
+          "the same listing, so listings that were never fetched cannot be "
+          "told apart from ones that were delisted.")
     for line in problems:
         print(f"      {line}")
-    print("    Re-run the incomplete side, or pass --force to compare anyway "
-          "(added/removed will include listings that were simply never "
-          "fetched).")
+    print("    Re-run the incomplete side (with --pages past the listing's "
+          "end), or pass --force to compare anyway (added/removed will "
+          "include listings that were simply never fetched).")
     return False
 
 
@@ -208,9 +250,10 @@ def parse_args():
                    help="Exit 1 if anything was added, removed or changed — "
                         "for a cron job that should only notify on a real diff.")
     p.add_argument("--force", action="store_true",
-                   help="Diff even when a run's .meta.json says it was partial "
-                        "or failed. Products never fetched by the short run will "
-                        "appear as added/removed.")
+                   help="Diff even when a run's .meta.json is missing or says "
+                        "it was limited, partial or failed, or the two runs "
+                        "read different listings. Products never fetched by "
+                        "the short run will appear as added/removed.")
     return p.parse_args()
 
 

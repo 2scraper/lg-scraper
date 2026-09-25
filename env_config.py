@@ -31,6 +31,7 @@ Run `python3 env_config.py` to see what would be picked up, WITHOUT printing
 any secret — the first thing to run when a key "isn't working".
 """
 
+import argparse
 import logging
 import os
 from pathlib import Path
@@ -49,12 +50,72 @@ ENV_KEYS = {
 # default, so `apply()` would never see it as unset and the variable would be
 # silently ignored — a setting that looks configurable and is not.
 
+# The only keys `python3 env_config.py` prints in clear: a category URL is
+# not a secret, and seeing it is the point of that report.
+_SHOWN_IN_CLEAR = {"LG_URL"}
+
 # Literal placeholder values from .env.example, treated as unset.
 _PLACEHOLDERS = {
     "your_2captcha_api_key_here",
     "your_api_key_here",
     "changeme",
 }
+
+# ---------------------------------------------------------------------------
+# Numeric CLI arguments, checked by argparse before anything touches the
+# network. `--pages 0` used to finish as a silent empty run, a negative
+# `--delay` crashed in time.sleep() after page 1 had already been fetched,
+# and `--retries 0` gave up on every page without ever requesting it.
+# ---------------------------------------------------------------------------
+# More pages than any lg.com category has (RU televisions: 5), with room to
+# spare — a cap on a typo, not on the catalogue.
+MAX_PAGES = 200
+# Each worker is a browser (~150-300MB); past this it is a mistake, not a plan.
+MAX_CONCURRENCY = 32
+
+
+def int_range(low, high=None):
+    """An argparse `type` accepting an int in [low, high]."""
+    def parse(text):
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a whole number")
+        if value < low or (high is not None and value > high):
+            span = f"between {low} and {high}" if high is not None else f"at least {low}"
+            raise argparse.ArgumentTypeError(f"must be {span}, got {value}")
+        return value
+    parse.__name__ = "int"
+    return parse
+
+
+def float_range(low, high=None, low_inclusive=True):
+    """An argparse `type` accepting a finite float in [low, high] (or (low, high])."""
+    def parse(text):
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a number")
+        too_low = value < low if low_inclusive else value <= low
+        if value != value or value in (float("inf"), float("-inf")) or too_low \
+                or (high is not None and value > high):
+            bound = f"{'at least' if low_inclusive else 'more than'} {low}"
+            if high is not None:
+                bound += f" and at most {high}"
+            raise argparse.ArgumentTypeError(f"must be {bound}, got {text}")
+        return value
+    parse.__name__ = "float"
+    return parse
+
+
+PAGES = int_range(1, MAX_PAGES)
+ATTEMPTS = int_range(1, 20)
+EXTRA_ATTEMPTS = int_range(0, 20)
+CONCURRENCY = int_range(1, MAX_CONCURRENCY)
+SECONDS = float_range(0.0, 3600.0)
+TIMEOUT = float_range(0.0, 600.0, low_inclusive=False)
+SCORE = float_range(0.0, 1.0, low_inclusive=False)
+
 
 _loaded_from = None
 
@@ -252,7 +313,10 @@ if __name__ == "__main__":
         if value is None:
             state = ("placeholder only (treated as unset)"
                      if raw and raw.strip() else "not set")
-        elif "KEY" in env_name or "@" in value:
+        elif env_name not in _SHOWN_IN_CLEAR:
+            # Every other key can carry a credential in a shape "@" does not
+            # catch — a CDP endpoint with ?token=…, a proxy with a key in
+            # its query string — so none of them is ever printed.
             state = f"set ({len(value)} chars, hidden)"
         else:
             state = f"set ({value})"

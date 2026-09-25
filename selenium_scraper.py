@@ -483,15 +483,15 @@ def parse_args():
                         "Required unless LG_URL is set.")
     p.add_argument("--category", default=None,
                    help="Label to tag output rows with. Defaults to what the URL says.")
-    p.add_argument("--pages", type=int, default=1, help="Number of pages to fetch")
-    p.add_argument("--delay", type=float, default=2.0, help="Delay between pages, seconds")
-    p.add_argument("--concurrency", type=int, default=1, metavar="N",
+    p.add_argument("--pages", type=env_config.PAGES, default=1, help="Number of pages to fetch")
+    p.add_argument("--delay", type=env_config.SECONDS, default=2.0, help="Delay between pages, seconds")
+    p.add_argument("--concurrency", type=env_config.CONCURRENCY, default=1, metavar="N",
                    help="Accepted for parity with the flag contract, but this "
                         "engine fetches one page at a time; N>1 warns and is "
                         "ignored. Use playwright_scraper.py for concurrency.")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=env_config.ATTEMPTS, default=3,
                    help="Attempts per page load before giving up (default 3)")
-    p.add_argument("--retry-delay", type=float, default=2.0,
+    p.add_argument("--retry-delay", type=env_config.SECONDS, default=2.0,
                    help="Seconds before the first page-load retry (default 2.0)")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="lg_products", help="Output file prefix")
@@ -504,7 +504,7 @@ def parse_args():
                    help="per-run (default) or per-page, relaunching the browser.")
     p.add_argument("--proxy-shuffle", action="store_true",
                    help="Shuffle the pool at startup.")
-    p.add_argument("--proxy-block-retries", type=int, default=2,
+    p.add_argument("--proxy-block-retries", type=env_config.EXTRA_ATTEMPTS, default=2,
                    help="Retries from OTHER exits when a page comes back blocked.")
     p.add_argument("--twocaptcha-key", default=None, help="2captcha.com API key")
     p.add_argument("--captcha-api", choices=["v2", "v1"], default="v2",
@@ -513,7 +513,7 @@ def parse_args():
                    default="when-blocked",
                    help="when-blocked (default): only pay when the products are "
                         "not already readable.")
-    p.add_argument("--min-score", type=float, default=0.7,
+    p.add_argument("--min-score", type=env_config.SCORE, default=0.7,
                    help="reCAPTCHA v3 minimum score (0.3, 0.7 or 0.9).")
     p.add_argument("--allow-empty", action="store_true",
                    help="Write output files even when 0 products were found.")

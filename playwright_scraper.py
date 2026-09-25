@@ -786,18 +786,18 @@ def parse_args():
                    help="Label to tag output rows with. Defaults to what the URL "
                         "itself says, so the column is never empty just because "
                         "the flag was omitted.")
-    p.add_argument("--pages", type=int, default=1, help="Number of pages to fetch")
-    p.add_argument("--delay", type=float, default=2.0, help="Delay between pages, seconds")
-    p.add_argument("--concurrency", type=int, default=1, metavar="N",
+    p.add_argument("--pages", type=env_config.PAGES, default=1, help="Number of pages to fetch")
+    p.add_argument("--delay", type=env_config.SECONDS, default=2.0, help="Delay between pages, seconds")
+    p.add_argument("--concurrency", type=env_config.CONCURRENCY, default=1, metavar="N",
                    help="Fetch pages 3..N through N parallel workers (default 1). "
                         "Each worker runs its own browser and holds its own proxy "
                         "exit. Pages 1 and 2 are always fetched alone — page 2 is "
                         "what proves the listing can be paged through by URL. "
                         "Ignored with --cdp-endpoint.")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=env_config.ATTEMPTS, default=3,
                    help="Attempts per page load before giving up (default 3); the "
                         "pause between attempts doubles each time.")
-    p.add_argument("--retry-delay", type=float, default=2.0,
+    p.add_argument("--retry-delay", type=env_config.SECONDS, default=2.0,
                    help="Seconds before the first page-load retry (default 2.0)")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="lg_products", help="Output file prefix")
@@ -814,7 +814,7 @@ def parse_args():
     p.add_argument("--proxy-shuffle", action="store_true",
                    help="Shuffle the pool at startup, so concurrent runs do not all "
                         "begin on the first exit in the file.")
-    p.add_argument("--proxy-block-retries", type=int, default=2,
+    p.add_argument("--proxy-block-retries", type=env_config.EXTRA_ATTEMPTS, default=2,
                    help="When a page comes back blocked, retry it from this many "
                         "OTHER exits before giving up (default 2).")
     p.add_argument("--twocaptcha-key", default=None, help="2captcha.com API key")
@@ -829,7 +829,7 @@ def parse_args():
                         "renders reCAPTCHA v3 on its support forms, not on "
                         "category pages. "
                         "always: solve whenever one is detected.")
-    p.add_argument("--min-score", type=float, default=0.7,
+    p.add_argument("--min-score", type=env_config.SCORE, default=0.7,
                    help="reCAPTCHA v3 minimum score to request (0.3, 0.7 or 0.9). "
                         "Ignored for Turnstile and v2 widgets.")
     p.add_argument("--allow-empty", action="store_true",

@@ -5,11 +5,14 @@ name: canary
 # offline badge stays green. This is the other half — one real run a day
 # against a known-good filtered URL.
 #
-# --pages 3, not 1: with one page pagination is never exercised, and
-# pagination is precisely where this family's failure mode lives. Every page
-# after the first is a CONSTRUCTED request — `page=N` sent to the site's own
-# catalogue API — so if that convention changes the run must go red rather
-# than return page 1 three times and report success.
+# --pages 10, past the end of the category (4-5 pages in 2026-09), not 1 and
+# not 3: with one page pagination is never exercised, and with fewer pages
+# than the category has the run is a SAMPLE — status "limited" since v0.2.0 —
+# which says nothing about whether the whole catalogue is still reachable.
+# Every page after the first is a CONSTRUCTED request — `page=N` sent to the
+# site's own catalogue API — so if that convention changes the run must go
+# red rather than return page 1 again and report success. The engine stops at
+# the API's own pageCount, so the spare pages cost no requests.
 on:
   schedule:
     # Off the hour, so it is not competing with every other cron job for
@@ -58,7 +61,7 @@ jobs:
           set +e
           python3 catalog_client.py \
             --url "https://www.lg.com/ru/televisions" \
-            --pages 3 --out canary_run --dump-html canary_run.json
+            --pages 10 --out canary_run --dump-html canary_api.json
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
       - name: Interpret the exit code
@@ -74,7 +77,7 @@ jobs:
                  exit 0
                fi ;;
             4) echo "::error::Ran fine but parsed 0 listings (exit 4) on a URL known to have hundreds — this is the shape a real site-side break takes." ; exit 1 ;;
-            6) echo "::error::Partial run (exit 6) — see the sidecar's stop_reason. 'pagination_not_addressable' means the ?page[number]= convention has stopped working." ; exit 1 ;;
+            6) echo "::error::Partial run (exit 6) — see the sidecar's stop_reason. 'api_error' means the catalogue API stopped answering; pages_failed says on which page." ; exit 1 ;;
             *) echo "::error::Unexpected exit code $code (see the step above)." ; exit 1 ;;
           esac
 
@@ -87,12 +90,15 @@ jobs:
           import json, sys
           from pathlib import Path
 
-          PAGES_REQUESTED = 3
-          # 12 products per page, so three pages is 36. The floor is set
-          # below that rather than tracking it; the category itself paged
-          # through 50 products on 2026-09-21 (its `totalCount` of 203 is
-          # the count of SIZE VARIANTS across those rows, not products).
-          MIN_PRODUCTS = 30
+          # The category paged through 50 products on 2026-09-21 (its
+          # `totalCount` of 203 is the count of SIZE VARIANTS across those
+          # rows, not products). The floor sits well below that: a catalogue
+          # that loses a model is not a failure, a categoryId that points
+          # somewhere else is.
+          MIN_PRODUCTS = 36
+          # Rows written over the category's own count. The engine dedupes
+          # by sku, so a model the API lists twice may pull this under 1.0.
+          MIN_COMPLETENESS = 0.95
 
           rows = json.loads(Path("canary_run.json").read_text())
           meta = json.loads(Path("canary_run.meta.json").read_text())
@@ -100,16 +106,25 @@ jobs:
 
           if len(rows) < MIN_PRODUCTS:
               fail.append(f"only {len(rows)} products, expected at least {MIN_PRODUCTS}")
-          if meta.get("status") != "complete":
-              fail.append(f"run status is {meta.get('status')!r}, not 'complete'")
-          if meta.get("pages_completed", 0) < PAGES_REQUESTED:
-              fail.append(f"stopped after {meta.get('pages_completed')} of "
-                          f"{PAGES_REQUESTED} pages (stop_reason="
+          if meta.get("status") != "complete" or meta.get("listing_complete") is not True:
+              fail.append(f"run status is {meta.get('status')!r} "
+                          f"(listing_complete={meta.get('listing_complete')!r}), "
+                          f"not a complete listing")
+          page_count = meta.get("page_count") or 0
+          if page_count < 2:
+              fail.append(f"the API reported {page_count!r} page(s) — pagination "
+                          f"was never exercised")
+          if meta.get("pages_completed", 0) < page_count:
+              fail.append(f"stopped after {meta.get('pages_completed')} of the "
+                          f"{page_count} pages the API reported (stop_reason="
                           f"{meta.get('stop_reason')!r})")
-          # The check the whole --pages 3 exists for. 50 on 2026-09-21, so
-          # the floor sits below it: a catalogue that loses a model is not a
-          # failure, a categoryId that points somewhere else is.
-          if meta.get("total_results", 0) < 40:
+          ratio = meta.get("completeness_ratio") or 0
+          if ratio < MIN_COMPLETENESS:
+              fail.append(f"wrote {meta.get('products')} of the "
+                          f"{meta.get('total_results')} products the category "
+                          f"pages through ({ratio:.0%})")
+          # A categoryId that points somewhere else shows up here.
+          if (meta.get("total_results") or 0) < 40:
               fail.append(f"the category pages through only "
                           f"{meta.get('total_results')} products — either the "
                           f"catalogue shrank far more than a model or two, or "
@@ -150,7 +165,7 @@ jobs:
             canary_run.json
             canary_run.csv
             canary_run.meta.json
-            canary_run.json*
+            canary_api.json*
             canary_run_page*_debug.*
           if-no-files-found: ignore
           retention-days: 14
