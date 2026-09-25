@@ -5,6 +5,80 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
+## [0.2.0] — 2026-09-25
+
+> **Behaviour change for anyone reading the sidecar.** A run that fetched
+> every page `--pages` allowed but stopped before the category ended is now
+> `status: "limited"` (still exit 0), not `"complete"`, and `diff_runs.py`
+> refuses it. A scheduled snapshot that relied on `--pages 3` of a longer
+> category must ask for more pages than the category has — `--pages 10`
+> costs nothing extra, the engine stops at the API's own last page.
+
+Every item below was reproduced before it was fixed, by a third-party audit
+on 2026-09-25 and again offline, and each has a regression check that fails
+against v0.1.0.
+
+### Fixed
+
+- **A sample was reported as the whole catalogue.** The engines start from
+  `stop_reason = "completed"` and kept it when the page loop simply ran out
+  of `--pages`; `finish_run` counted that as complete. Live, `--pages 2` of
+  the 48-product RU television category wrote `status: complete` with 24
+  products and `total_results: 48`, and `diff_runs.py` then reported **24
+  removed**. `finish_run` now calls such a run complete only on the site's
+  own evidence — every page of its `pageCount` fetched, or the products
+  reaching its `totalCount` — and `limited` otherwise. Fixed once, in the
+  shared `finish_run`, so all five engines get it.
+- **`diff_runs.py` trusted what it could not see.** A missing sidecar was
+  treated as "nothing to check", and two complete runs of different
+  categories were diffed row by row. Both are now refused without `--force`.
+- **The lg.com check accepted any host ending in "lg.com"** — `notlg.com`,
+  `evillg.com` — plus `http://`, `file://`, userinfo and non-standard ports.
+  Now HTTPS only, the host `lg.com` or a subdomain of it, default port, no
+  userinfo; a URL with no scheme says so instead of calling the host a
+  locale.
+- **The form's action was POSTed to wherever it pointed.** It comes from
+  served HTML; an absolute action (`http://169.254.169.254/…`) was followed
+  as-is. It must now be same-origin and under the page's own
+  `/{locale}/mkt/ajax/`, every redirect hop of the category GET is checked
+  against the same rule, and the API POST no longer follows redirects. An
+  off-origin `data-price-sync-url` is dropped.
+- **Output writes were not atomic.** A missing `--out` directory raised
+  `FileNotFoundError` after every page had been fetched, and a run killed
+  mid-write left a torn file where the last good one had been. Files are now
+  written to a temporary file, `fsync`ed and renamed; the directory is
+  created; the old sidecar is removed first and the new one written last.
+- **Numeric flags were not validated.** `--pages 0` finished as an empty
+  run, a negative `--delay` crashed in `sleep()` after page 1, `--retries 0`
+  never made a request. All five CLIs now range-check these before any
+  network call (exit 2).
+- **`python3 env_config.py` printed credentials without an `@`** — a CDP
+  endpoint with `?token=` or a proxy with a key in its query string. Every
+  key but `LG_URL` is now shown as a length only.
+- **The canary checked a sample.** It ran `--pages 3` of a 4-5 page
+  category and required `complete`; it now reads the whole category and
+  asserts `listing_complete`, `pages_completed == page_count` and at least
+  95% of `total_results` written. Its `--dump-html` no longer shares a name
+  with the output file.
+
+### Added
+
+- Sidecar fields `schema_version` (2), `listing_complete`, `scope`
+  (`full_listing` / `limited_pages`), `page_count` and `completeness_ratio`.
+
+### Not changed, and why
+
+- **The flat module layout and the single-file `smoke_test.py`** — the
+  audit's `src/` package, shared orchestrator and pytest-module migration
+  are a family-wide decision (the template keeps them this way on purpose),
+  not a fix; the status/exit mapping the engines must agree on is already
+  one shared `finish_run`.
+- **pyppeteer stays**, as the original brief requires.
+- **Supply-chain hardening** (Actions pinned by SHA, image digest, non-root
+  container, lock files, `pip-audit`) is worth doing and is a separate batch:
+  a non-root user breaks the documented `-v "$PWD/out:/out"` mount on Linux
+  and needs its own answer.
+
 ## [0.1.0] — 2026-09-21
 
 First release of the rewritten scraper. Everything below is a difference from
