@@ -145,7 +145,7 @@ asterisks is discarded.
 
 | Script | Engine | Live status, 2026-09-21 |
 |---|---|---|
-| `catalog_client.py` | **The site's own API** (recommended) | 36 products / 3 pages / exit 0, no browser and no key |
+| `catalog_client.py` | **The site's own API** (recommended) | 36 products / 3 pages / exit 0, no browser and no key; the whole category, 48 products / 4 pages / `complete`, on 2026-09-25 |
 | `playwright_scraper.py` | Playwright | the rendered grid |
 | `puppeteer_scraper.py` | pyppeteer | the rendered grid; needs `PYPPETEER_EXECUTABLE_PATH` on modern macOS |
 | `selenium_scraper.py` | Selenium + Chrome | the rendered grid |
@@ -157,8 +157,13 @@ asterisks is discarded.
 pip install -r requirements.txt        # core: bs4 + requests
 
 python3 catalog_client.py \
-  --url "https://www.lg.com/ru/televisions" --pages 3 --out tv_products
+  --url "https://www.lg.com/ru/televisions" --pages 10 --out tv_products
 ```
+
+`--pages` is a ceiling, not a target: the engine stops at the category's own
+last page, so asking for more than it has costs nothing. Asking for FEWER is
+a sample — the run succeeds (exit 0), but its sidecar says `status: limited`
+and `diff_runs.py` will not treat it as the whole assortment.
 
 That is the whole install for the recommended path — no browser at all. For a
 browser engine, add exactly one of `requirements-playwright.txt`,
@@ -207,9 +212,23 @@ What the 2Captcha products are for here:
 | 6 | partial: some pages gathered, then the run stopped early |
 
 Every run that writes output also writes `<out>.meta.json` with `status`,
-`stop_reason`, **which** pages failed by number and the category's own
-`total_results`. `diff_runs.py` refuses to compare two runs that are not both
-`complete`.
+`listing_complete`, `scope`, `stop_reason`, **which** pages failed by number,
+and the category's own `total_results` and `page_count`. `status` is one of:
+
+| Status | Exit | Means |
+|---|---|---|
+| `complete` | 0 | the whole listing was read — the site ran out of products, every page it reported was fetched, or the products reached its own total |
+| `limited` | 0 | every page asked for was fetched, but `--pages` ended the run before the listing did: a sample |
+| `partial` | 6 | some pages were gathered, then a page failed |
+
+`diff_runs.py` refuses to compare two runs unless both are `complete`, both
+have a sidecar, and both read the same listing; `--force` overrides it. Until
+v0.2.0 a `limited` run was written as `complete`, so a `--pages 2` run diffed
+against a full one reported the unread half of the category as removed.
+
+Output files are written through a temporary file and renamed into place, the
+`--out` directory is created if it is missing, and the sidecar is written
+last — a run killed half way leaves the previous files whole.
 
 ## Traps that look like bugs
 
@@ -238,7 +257,7 @@ cost the most time:
 ## Testing
 
 ```bash
-python3 smoke_test.py      # 346 checks, no network, ~3s
+python3 smoke_test.py      # 449 checks with all three engines installed, no network, ~5s
 pytest -q                  # the same run, through the pytest entry point
 ```
 
@@ -248,8 +267,10 @@ fixture, the payload is built from it, pages are classified, rows are parsed
 and deduped, and `finish_run` decides the exit code. The cases pinned there
 are a complete run, a category that runs out, a page that repeats the
 previous one, a refusal, a page with no form, a page lost mid-run (exit 6,
-with the failing page named in the sidecar) and a category page that never
-loaded.
+with the failing page named in the sidecar), a category page that never
+loaded, a `--pages` sample of a longer category (`limited`, and refused by
+`diff_runs.py`), and a page whose form points the POST anywhere but its own
+`https://…lg.com/{locale}/mkt/ajax/`.
 
 ## Licence
 

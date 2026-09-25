@@ -2559,6 +2559,329 @@ def check_catalog_client_run():
         sys.argv = argv
 
 
+# ---------------------------------------------------------------------------
+# v0.2.0: the four defects the 2026-09-25 audit reproduced live
+# ---------------------------------------------------------------------------
+def _meta(prefix):
+    path = f"{prefix}.meta.json"
+    return json.load(open(path, encoding="utf-8")) if os.path.exists(path) else None
+
+
+def _diff(old, new, *extra):
+    import diff_runs
+    argv = sys.argv
+    sys.argv = ["diff_runs", "--old", old, "--new", new, *extra]
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            rc = diff_runs.main()
+    finally:
+        sys.argv = argv
+    return rc, buf.getvalue()
+
+
+def check_a_sample_is_never_a_full_listing():
+    """`--pages 2` of a 4-page category wrote status=complete, and diff_runs
+    then reported the unread half as 24 delisted models. Measured live."""
+    print("\n[a limited run is not a complete listing]")
+    rows = [_row(sku=f"S{i}") for i in range(24)]
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = os.path.join(tmp, "lim")
+        with redirect_stdout(io.StringIO()):
+            rc = finish_run(rows, prefix, "json", False, blocked=False,
+                            stop_reason="completed", pages_requested=2,
+                            pages_completed=2, start_url="u", final_url="u",
+                            total_results=48, page_count=4)
+        meta = _meta(prefix)
+        eq("running out of --pages early is still a successful task", rc, 0)
+        eq("but the sidecar says limited, not complete", meta["status"], "limited")
+        eq("listing_complete is false", meta["listing_complete"], False)
+        eq("scope names it a sample", meta["scope"], "limited_pages")
+        eq("stop_reason says --pages ran out", meta["stop_reason"], "page_limit")
+        eq("and the ratio says how much was read", meta["completeness_ratio"], 0.5)
+
+        with redirect_stdout(io.StringIO()):
+            finish_run(rows, prefix, "json", False, blocked=False,
+                       stop_reason="completed", pages_requested=3,
+                       pages_completed=3, start_url="u", final_url="u")
+        eq("with no count from the site at all, a used-up --pages proves "
+           "nothing either", _meta(prefix)["status"], "limited")
+
+        with redirect_stdout(io.StringIO()):
+            finish_run(rows, prefix, "json", False, blocked=False,
+                       stop_reason="completed", pages_requested=2,
+                       pages_completed=2, start_url="u", final_url="u",
+                       total_results=48, page_count=2)
+        meta = _meta(prefix)
+        eq("reading every page the site reported IS complete", meta["status"], "complete")
+        eq("and the reason becomes the data's, not the loop's",
+           meta["stop_reason"], "listing_exhausted")
+
+        with redirect_stdout(io.StringIO()):
+            finish_run(rows, prefix, "json", False, blocked=False,
+                       stop_reason="completed", pages_requested=2,
+                       pages_completed=2, start_url="u", final_url="u",
+                       total_results=24)
+        eq("so is reaching the site's own product count",
+           _meta(prefix)["status"], "complete")
+
+    served = (PAGE_FIXTURE_HTML, 200)
+    full = _api_payload(json.loads(API_FIXTURE_JSON)["data"][0]["productList"])
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows_, meta, calls = _run_catalog(tmp, served, [(full, 200)], pages=1)
+        eq("the catalogue engine's --pages 1 of a 5-page category exits 0", rc, 0)
+        eq("and is written as limited", (meta or {}).get("status"), "limited")
+        eq("with the API's page count in the sidecar", (meta or {}).get("page_count"), 5)
+
+    # The live failure, end to end through diff_runs.
+    with tempfile.TemporaryDirectory() as tmp:
+        full_p, lim_p = os.path.join(tmp, "full"), os.path.join(tmp, "lim")
+        url = "https://www.lg.com/ru/televisions"
+        with redirect_stdout(io.StringIO()):
+            finish_run([_row(sku=f"S{i}") for i in range(48)], full_p, "json",
+                       False, blocked=False, stop_reason="listing_exhausted",
+                       pages_requested=10, pages_completed=4, start_url=url,
+                       final_url=url, total_results=48, page_count=4)
+            finish_run(rows, lim_p, "json", False, blocked=False,
+                       stop_reason="completed", pages_requested=2,
+                       pages_completed=2, start_url=url, final_url=url,
+                       total_results=48, page_count=4)
+        rc, out = _diff(f"{full_p}.json", f"{lim_p}.json")
+        eq("diff_runs refuses a full run against a limited one", rc, 2)
+        check("and reports no removals at all", " removed," not in out)
+        rc, out = _diff(f"{full_p}.json", f"{lim_p}.json", "--force")
+        check("--force still compares, and says what it found",
+              rc == 0 and "24 removed" in out)
+        rc, _ = _diff(f"{full_p}.json", f"{full_p}.json")
+        eq("two complete runs of one listing diff normally", rc, 0)
+
+        os.remove(f"{lim_p}.meta.json")
+        rc, out = _diff(f"{full_p}.json", f"{lim_p}.json")
+        eq("a run with no sidecar is refused, not trusted", rc, 2)
+
+        other = os.path.join(tmp, "fridges")
+        with redirect_stdout(io.StringIO()):
+            finish_run([_row(sku="F1")], other, "json", False, blocked=False,
+                       stop_reason="listing_exhausted", pages_requested=1,
+                       pages_completed=1,
+                       start_url="https://www.lg.com/ru/refrigerators",
+                       final_url="u", total_results=1, page_count=1)
+        rc, out = _diff(f"{full_p}.json", f"{other}.json")
+        eq("two complete runs of DIFFERENT listings are refused", rc, 2)
+        eq("while ?page=1 is the same listing as no parameter",
+           __import__("diff_runs")._listing_key(url + "?page=1"),
+           __import__("diff_runs")._listing_key(url + "/"))
+
+
+def check_only_lg_is_fetched():
+    """`endswith("lg.com")` accepted notlg.com, and the form's own absolute
+    action was POSTed to wherever it pointed."""
+    print("\n[only https://…lg.com is fetched or POSTed to]")
+    refused = ("https://notlg.com/ru/televisions",
+               "https://evillg.com/ru/televisions",
+               "https://lg.com.attacker.tld/ru/televisions",
+               "http://www.lg.com/ru/televisions",
+               "file:///ru/televisions",
+               "www.lg.com/ru/televisions",
+               "https://user@www.lg.com/ru/televisions",
+               "https://www.lg.com:8443/ru/televisions",
+               "https://www.xn--l-3ga.com/ru/televisions")   # IDN lookalike
+    for url in refused:
+        check(f"refused: {url}",
+              product_parser.unsupported_locale_reason(url) is not None)
+    for url in ("https://www.lg.com/ru/televisions", "https://lg.com/ua/televisions",
+                "https://WWW.LG.COM:443/ru/televisions"):
+        eq(f"accepted: {url}", product_parser.unsupported_locale_reason(url), None)
+    check("no scheme says so, rather than calling the host a locale",
+          "no scheme" in product_parser.unsupported_locale_reason(
+              "www.lg.com/ru/televisions"))
+
+    page = "https://www.lg.com/ru/televisions"
+    reason = product_parser.api_endpoint_reason
+    eq("the site's own action is allowed",
+       reason("https://www.lg.com/ru/mkt/ajax/category/retrieveCategoryProductList", page),
+       None)
+    for bad in ("http://169.254.169.254/latest/meta-data",
+                "https://evil.example/ru/mkt/ajax/x",
+                "https://shop.lg.com/ru/mkt/ajax/x",
+                "https://www.lg.com/ru/admin/delete",
+                "https://www.lg.com/ua/mkt/ajax/x"):
+        check(f"an action pointing at {bad} is refused", reason(bad, page) is not None)
+
+    evil = PAGE_FIXTURE_HTML.replace(
+        'action="/ru/mkt/ajax/category/retrieveCategoryProductList"',
+        'action="http://169.254.169.254/latest/meta-data"').replace(
+        'data-price-sync-url="/ru/mkt/ajax/priceSync/retrievePlpPriceSyncList"',
+        'data-price-sync-url="//evil.example/p"')
+    check("the fixture really was rewritten", "169.254" in evil and "evil.example" in evil)
+    form = product_parser.parse_catalog_form(evil, page)
+    eq("an off-origin price endpoint is dropped", form["price_sync_url"], None)
+    full = _api_payload(json.loads(API_FIXTURE_JSON)["data"][0]["productList"])
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(tmp, (evil, 200), [(full, 200)])
+        eq("a page whose form points off-site exits 4", rc, EXIT_NO_PRODUCTS)
+        eq("and nothing is POSTed anywhere", calls["api"], 0)
+
+    class _Resp:
+        def __init__(self, status, location=None, text="<html></html>"):
+            self.status_code, self.text = status, text
+            self.headers = {"Location": location} if location else {}
+            self.is_redirect = location is not None
+
+    class _Session:
+        def __init__(self, answers):
+            self.answers, self.urls = list(answers), []
+
+        def get(self, url, timeout=None, allow_redirects=True):
+            self.urls.append((url, allow_redirects))
+            return self.answers.pop(0)
+
+    s = _Session([_Resp(302, "https://evil.example/ru/televisions")])
+    eq("a redirect off lg.com is not followed",
+       catalog_client.fetch_category_page(s, page, 5), (None, None))
+    eq("the redirect target is never requested", len(s.urls), 1)
+    check("and requests' own redirect-following is off",
+          all(not follow for _, follow in s.urls))
+    s = _Session([_Resp(301, "/ru/televisions/"), _Resp(200, text="ok")])
+    eq("a redirect within lg.com is followed",
+       catalog_client.fetch_category_page(s, page, 5), ("ok", 200))
+    eq("to the resolved address", s.urls[-1][0], "https://www.lg.com/ru/televisions/")
+    s = _Session([_Resp(302, "/ru/loop")] * 10)
+    eq("a redirect loop gives up", catalog_client.fetch_category_page(s, page, 5),
+       (None, None))
+    src = inspect.getsource(catalog_client.fetch_api_page)
+    check("the API POST does not follow redirects", "allow_redirects=False" in src)
+
+
+def check_output_is_written_atomically():
+    """A missing --out directory crashed after every page was fetched, and a
+    run killed mid-write left a torn file where last night's good one was."""
+    print("\n[output is written atomically]")
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = os.path.join(tmp, "not", "yet", "there", "tv")
+        with redirect_stdout(io.StringIO()):
+            rc = finish_run([_row(sku="a")], prefix, "both", False, blocked=False,
+                            stop_reason="listing_exhausted", pages_requested=1,
+                            pages_completed=1, start_url="u", final_url="u")
+        eq("a missing parent directory is created", rc, 0)
+        check("and all three files land in it",
+              all(os.path.exists(prefix + ext) for ext in (".json", ".csv", ".meta.json")))
+
+        good = [{"sku": "yesterday"}]
+        with open(f"{prefix}.json", "w", encoding="utf-8") as f:
+            json.dump(good, f)
+        original = output_writer.json.dump
+
+        def dies_half_way(obj, f, **kw):
+            f.write('[{"sku": "tod')
+            raise KeyboardInterrupt
+        output_writer.json.dump = dies_half_way
+        try:
+            output_writer.write_json([_row(sku="today")], f"{prefix}.json")
+            check("an interrupted write re-raises", False)
+        except KeyboardInterrupt:
+            check("an interrupted write re-raises", True)
+        finally:
+            output_writer.json.dump = original
+        eq("and leaves the previous file whole",
+           json.load(open(f"{prefix}.json", encoding="utf-8")), good)
+        leftovers = [n for n in os.listdir(os.path.dirname(prefix)) if n.startswith(".tmp-")]
+        eq("with no temporary file left behind", leftovers, [])
+
+        # The sidecar goes first and comes back last: a run that dies
+        # between data and sidecar leaves NO sidecar, never an old one.
+        original_meta = output_writer.write_run_meta
+
+        def dies(*a, **kw):
+            raise KeyboardInterrupt
+        output_writer.write_run_meta = dies
+        try:
+            with redirect_stdout(io.StringIO()):
+                finish_run([_row(sku="b")], prefix, "json", False, blocked=False,
+                           stop_reason="listing_exhausted", pages_requested=1,
+                           pages_completed=1, start_url="u", final_url="u")
+        except KeyboardInterrupt:
+            pass
+        finally:
+            output_writer.write_run_meta = original_meta
+        check("a run killed before its sidecar leaves no stale one vouching "
+              "for the new data", not os.path.exists(f"{prefix}.meta.json"))
+
+
+def check_numeric_flags_are_validated():
+    """`--pages 0` finished as an empty run, `--delay -1` crashed in sleep()
+    after page 1, `--retries 0` never made a request."""
+    print("\n[numeric flags are checked before any request]")
+    import scraper_api_client
+    modules = {"catalog_client": catalog_client,
+               "scraper_api_client": scraper_api_client, **ENGINES}
+    bad = (["--pages", "0"], ["--pages", "-3"], ["--pages", "100000"],
+           ["--delay", "-1"], ["--retry-delay", "nan"], ["--delay", "inf"],
+           ["--pages", "two"])
+    argv = sys.argv
+    for name, module in modules.items():
+        for extra in bad:
+            sys.argv = [name, "--url", "https://www.lg.com/ru/televisions", *extra]
+            try:
+                with redirect_stdout(io.StringIO()), \
+                        __import__("contextlib").redirect_stderr(io.StringIO()):
+                    module.parse_args()
+                check(f"{name} refuses {' '.join(extra)}", False)
+            except SystemExit as e:
+                eq(f"{name} refuses {' '.join(extra)} as bad usage", e.code, 2)
+            finally:
+                sys.argv = argv
+    for name, extra in (("catalog_client", ["--retries", "0"]),
+                        ("catalog_client", ["--timeout", "0"])):
+        sys.argv = [name, "--url", "https://www.lg.com/ru/televisions", *extra]
+        try:
+            with __import__("contextlib").redirect_stderr(io.StringIO()):
+                catalog_client.parse_args()
+            check(f"{name} refuses {' '.join(extra)}", False)
+        except SystemExit as e:
+            eq(f"{name} refuses {' '.join(extra)} as bad usage", e.code, 2)
+        finally:
+            sys.argv = argv
+    sys.argv = ["scraper_api_client", "--url", "https://www.lg.com/ru/televisions",
+                "--retries", "0"]
+    try:
+        with redirect_stdout(io.StringIO()):
+            eq("the Scraper API's --retries counts EXTRA attempts, so 0 is valid",
+               scraper_api_client.parse_args().retries, 0)
+    except SystemExit:
+        check("the Scraper API's --retries counts EXTRA attempts, so 0 is valid", False)
+    finally:
+        sys.argv = argv
+    sys.argv = ["catalog_client", "--url", "https://www.lg.com/ru/televisions",
+                "--pages", "4", "--delay", "0"]
+    try:
+        args = catalog_client.parse_args()
+        eq("valid values still parse", (args.pages, args.delay), (4, 0.0))
+    finally:
+        sys.argv = argv
+
+
+def check_env_report_hides_every_credential():
+    """`python3 env_config.py` printed any value without an "@" — which a
+    CDP endpoint carrying `?token=` does not have."""
+    print("\n[the .env report hides every credential]")
+    import subprocess
+    secret = "synthetictoken" + "Q" * 18
+    env = {k: v for k, v in os.environ.items() if k not in env_config.ENV_KEYS}
+    env.update(LG_CDP_ENDPOINT=f"wss://cdp.example/?token={secret}",
+               LG_PROXY=f"http://10.0.0.1:3128/?key={secret}",
+               LG_URL="https://www.lg.com/ru/televisions",
+               PYTHONDONTWRITEBYTECODE="1")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = subprocess.run([sys.executable, os.path.join(REPO, "env_config.py")],
+                             cwd=tmp, env=env, capture_output=True, text=True,
+                             timeout=60)
+    text = out.stdout + out.stderr
+    check("a token in a query string is not printed", secret not in text)
+    check("the category URL still is", "https://www.lg.com/ru/televisions" in text)
+
+
+
 def main() -> int:
     logging.basicConfig(level=logging.ERROR)
     print("lg-scraper offline suite")
@@ -2573,6 +2896,11 @@ def main() -> int:
                   check_remote_connect_failures_are_redacted,
                   check_proxy_rotation, check_proxy_preflight,
                   check_output_contract, check_catalog_client_run,
+                  check_a_sample_is_never_a_full_listing,
+                  check_only_lg_is_fetched,
+                  check_output_is_written_atomically,
+                  check_numeric_flags_are_validated,
+                  check_env_report_hides_every_credential,
                   check_engine_parity,
                   check_readiness_wait_is_csp_safe,
                   check_engine_imports_driver_at_module_level,
