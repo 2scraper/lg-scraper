@@ -204,8 +204,20 @@ def detect_recaptcha_v3(html: str, page_url: str = "") -> Optional[CaptchaChalle
                                 action=execute.group(2), page_url=page_url)
     key = re.search(r'data-sitekey=["\'](' + _RECAPTCHA_KEY_RE + r')["\']', cleaned)
     if key and "grecaptcha.render" in cleaned:
-        return CaptchaChallenge(kind="recaptcha_v3", sitekey=key.group(1),
-                                page_url=page_url)
+        # An explicitly rendered WIDGET is v2, never v3: v3 has no widget and
+        # no data-sitekey element, it is `render=<sitekey>` + execute(). This
+        # branch used to say v3, and a v2 checkbox sent as a v3 task comes
+        # back ERROR_CAPTCHA_UNSOLVABLE (measured 2026-09-28 on 2Captcha's own
+        # reCAPTCHA v2 demo page). The loader decides where it can.
+        render = re.search(r"recaptcha/api\.js\?[^\"']*render=([^&\"']+)", cleaned)
+        if render and render.group(1) == key.group(1):
+            return CaptchaChallenge(kind="recaptcha_v3", sitekey=key.group(1),
+                                    page_url=page_url)
+        invisible = re.search(r'data-size=["\']invisible["\']', cleaned)
+        return CaptchaChallenge(
+            kind="recaptcha_v2_invisible" if invisible else "recaptcha_v2",
+            sitekey=key.group(1), page_url=page_url,
+            size="invisible" if invisible else None)
     return None
 
 
@@ -224,7 +236,7 @@ def detect_in_html(html: str, page_url: str = "") -> Optional[CaptchaChallenge]:
 # invoked (Selenium). It reads what the HTML cannot show: a widget configured
 # entirely in JavaScript.
 CAPTCHA_DISCOVERY_JS = r"""
- => {
+() => {
   const out = {found: false, kind: null, sitekey: null, size: null,
                action: null, renderParam: null, challengeFrame: false,
                mountFilled: false, hints: []};
@@ -354,7 +366,10 @@ def detect_in_page(evaluate, page_url: str = "") -> Optional[CaptchaChallenge]:
     try:
         info = evaluate(CAPTCHA_DISCOVERY_JS)
     except Exception as e:  # noqa: BLE001 — any engine's evaluate can raise
-        logger.debug("In-page captcha discovery failed: %s", e)
+        # WARNING, not debug: at debug level this hid, for the whole life of
+        # the family core, that the script did not even parse (" => {" with
+        # no parameter list) — so runtime detection never ran anywhere.
+        logger.warning("In-page captcha discovery failed: %s", e)
         return None
     return challenge_from_discovery(info, page_url)
 

@@ -228,7 +228,7 @@ async def handle_captcha_if_present(page, args) -> None:
         info = await page.evaluate(CAPTCHA_DISCOVERY_JS)
         runtime = challenge_from_discovery(info, page_url=url)
     except Exception as e:  # noqa: BLE001 — discovery must never end a run
-        logger.debug("Runtime captcha discovery failed: %s", e)
+        logger.warning("Runtime captcha discovery failed: %s", e)
 
     challenge = reconcile_detections(detect_in_html(html, url), runtime)
     if not challenge:
