@@ -9,6 +9,11 @@ means fixes, not that every flag is frozen.
 
 ### Fixed
 
+- **A refused Fingerprint API crashed the run with a traceback and exit 1.**
+  It now exits 5, the remote-API code, with the reason and no traceback.
+  The case is real: on 2026-09-28 a key with a working captcha-solving
+  balance got 403 from `/fingerprint/random`, because fingerprints are a
+  separate subscription.
 - **Runtime captcha detection never ran, in any engine.** The in-page
   discovery script began ` => {`, with no parameter list. That is a
   SyntaxError, and it was logged at debug level. Selenium also returned the

@@ -83,6 +83,11 @@ def _cache_path(cache_dir: str, params: dict, generate: bool) -> str:
     return os.path.join(cache_dir, f"{digest}.json")
 
 
+class FingerprintError(RuntimeError):
+    """The Fingerprint API refused or failed. A remote-API error (exit 5),
+    not a crash: the message says why, and a traceback adds nothing."""
+
+
 def get_fingerprint(api_key: str, *, tags: Optional[str] = DEFAULT_TAGS,
                     country: Optional[str] = None,
                     min_browser_version: Optional[int] = None,
@@ -135,18 +140,18 @@ def get_fingerprint(api_key: str, *, tags: Optional[str] = DEFAULT_TAGS,
             # working captcha-solving balance: /fingerprint/random answers 403,
             # not 401. Both mean the same thing here and both used to surface
             # as a bare stack trace with the key in the URL.
-            raise RuntimeError(
+            raise FingerprintError(
                 f"Fingerprint API rejected the key ({resp.status_code}). This is "
                 f"a SEPARATE subscription from captcha solving — a key with a "
                 f"working solver balance is not automatically enabled for "
                 f"fingerprints, and answers 403 when it is not.")
         if resp.status_code == 400:
-            raise RuntimeError(
+            raise FingerprintError(
                 f"Fingerprint API rejected the request (400). The usual cause "
                 f"is --tags: send ONE OS-family tag (got {tags!r}). Body: "
                 f"{redact_secret_patterns(resp.text[:300])}")
         if resp.status_code == 429:
-            raise RuntimeError(
+            raise FingerprintError(
                 "Fingerprint API rate limit hit (429). The per-minute cap "
                 "depends on your plan — cache the result instead of fetching "
                 "per request.")
@@ -155,7 +160,7 @@ def get_fingerprint(api_key: str, *, tags: Optional[str] = DEFAULT_TAGS,
     except requests.RequestException as e:
         # The key is in the query string on this endpoint, and `requests` puts
         # the whole URL into the message. Redact before it reaches a log.
-        raise RuntimeError(f"Fingerprint API request failed: "
+        raise FingerprintError(f"Fingerprint API request failed: "
                            f"{redact_secret_patterns(str(e))}") from None
 
     if cache_dir:

@@ -62,6 +62,7 @@ import env_config
 import page_flow
 from captcha_solver import (INJECT_TOKEN_FN, detect_in_html, detect_in_page,
                             reconcile_detections, solve)
+from fingerprint_client import FingerprintError
 from output_writer import dedupe_by_sku, finish_run
 from product_parser import (SELECTORS, category_from_url, page_url,
                             parse_products, unsupported_locale_reason)
@@ -80,6 +81,8 @@ ITEM_CARD_SELECTOR = SELECTORS["item_card"]
 # grid paints. The grid holds 12 products per page — measured on every
 # capture, and confirmed by the catalogue API returning exactly 12 — so 5 is
 # comfortably below a full page and safely above an accident.
+# The family's remote-API exit code; scraper_api_client.py defines the same.
+EXIT_API_ERROR = 5
 MIN_CARD_MATCHES = 5
 # How long to wait for the grid to paint. Not a precondition for data (see the
 # module docstring) — it buys the DOM cross-check.
@@ -891,6 +894,14 @@ if __name__ == "__main__":
         # surface as a connection failure on page 1 with nothing naming it.
         logger.error("%s", e)
         sys.exit(2)
+    except FingerprintError as e:
+        # The run asked for a fingerprint and cannot have one — measured
+        # 2026-09-28: a key with a working solver balance gets 403 here when
+        # the separate Fingerprint subscription is off. Exit 5 like any other
+        # remote API error, with the reason and no traceback.
+        logger.error("%s No page was fetched. Drop --fingerprint to run "
+                     "without one.", e)
+        sys.exit(EXIT_API_ERROR)
     except KeyboardInterrupt:
         sys.exit(1)
     except Exception:  # noqa: BLE001 — a traceback is a log, and it is printed

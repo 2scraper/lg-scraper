@@ -3077,6 +3077,38 @@ def check_recaptcha_version_from_markup():
        "recaptcha_v3")
 
 
+def check_fingerprint_refusal_is_an_api_error():
+    """A refused or unreachable Fingerprint API is exit 5 with a reason, not
+    a traceback and exit 1. Offline: requests go to a proxy that does not
+    exist, and every variable a developer's own .env could set is overridden
+    with an empty one (which the loader treats as unset)."""
+    print("\n[fingerprint refusal]")
+    if ENGINES.get("playwright_scraper") is None:
+        skip("fingerprint refusal", "playwright not installed")
+        return
+    import subprocess
+    example = open(os.path.join(REPO, ".env.example"), encoding="utf-8").read()
+    url = re.search(r"^[A-Z]+_URL=(https?://\S+)", example, re.M).group(1)
+    fake_key = "f" + "a" * 31
+    env = dict(os.environ, HTTPS_PROXY="http://127.0.0.1:9",
+               HTTP_PROXY="http://127.0.0.1:9",
+               **{name: "" for name in env_config.ENV_KEYS})
+    with tempfile.TemporaryDirectory() as tmp:
+        run = subprocess.run(
+            [sys.executable, os.path.join(REPO, "playwright_scraper.py"),
+             "--url", url, "--pages", "1",
+             "--fingerprint", "--twocaptcha-key", fake_key,
+             "--out", os.path.join(tmp, "run")],
+            cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+    text = run.stdout + run.stderr
+    # 5 is the family contract's remote-API code, whichever module names it.
+    eq("a failed fingerprint fetch exits 5, the remote-API code", run.returncode, 5)
+    check("with the reason and no traceback", "Traceback" not in text
+          and "Fingerprint API" in text)
+    check("and the key, which rides in this endpoint's query string, is not "
+          "printed", fake_key not in text)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.ERROR)
     print("lg-scraper offline suite")
@@ -3112,7 +3144,8 @@ def main() -> int:
                   check_concurrency_machinery,
                   check_worker_pools_start_on_different_exits,
                   check_captcha_javascript_actually_runs,
-                  check_recaptcha_version_from_markup):
+                  check_recaptcha_version_from_markup,
+                  check_fingerprint_refusal_is_an_api_error):
         group()
 
     print("\n" + "=" * 62)
