@@ -5,6 +5,29 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
+## [0.2.2] — 2026-09-28
+
+### Fixed
+
+- **A refused Fingerprint API crashed the run with a traceback and exit 1.**
+  It now exits 5, the remote-API code, with the reason and no traceback.
+  The case is real: on 2026-09-28 a key with a working captcha-solving
+  balance got 403 from `/fingerprint/random`, because fingerprints are a
+  separate subscription.
+- **Runtime captcha detection never ran, in any engine.** The in-page
+  discovery script began ` => {`, with no parameter list. That is a
+  SyntaxError, and it was logged at debug level. Selenium also returned the
+  function instead of calling it. Both are fixed, and a discovery failure is
+  now a warning. The suite now runs `node --check` on every shipped script
+  and executes discovery in a real Chromium page. A script error there is a
+  failure, not a skip.
+- **An explicitly rendered reCAPTCHA v2 widget was classified as v3** by the
+  HTML detector. 2Captcha answers a v2 task sent as v3 with
+  `ERROR_CAPTCHA_UNSOLVABLE`. Found by a live solve in screener-scraper
+  (2026-09-28, 2Captcha's reCAPTCHA v2 demo page), which shares this
+  module; after the fix, the demo page's own server-side check returned
+  `"success": true`.
+
 ## [0.2.1] — 2026-09-25
 
 No change to what the scraper does. What changes is how it is installed and

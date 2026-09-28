@@ -83,6 +83,12 @@ def check(label, condition):
     return bool(condition)
 
 
+def skip(label, why):
+    """Record a check that could not run, in this suite's own convention:
+    a passing line that SAYS it was skipped, so it is visible in the output."""
+    return check(f"{label} ({why} — SKIPPED)", True)
+
+
 def eq(label, actual, expected):
     ok = actual == expected
     if not ok:
@@ -2977,6 +2983,138 @@ def check_supply_chain_is_pinned():
 
 
 
+# The shape of 2Captcha's own reCAPTCHA v2 demo page (2captcha.com/demo/
+# recaptcha-v2, 2026-09-28), reduced to what a detector reads: an explicit
+# loader and a widget element. The sitekey is a made-up one of the right shape.
+_V2_KEY = "6L" + "Xx" * 19
+_V2_EXPLICIT = ('<script src="https://www.google.com/recaptcha/api.js?'
+                'onload=onRecaptchaLoad&render=explicit"></script>'
+                '<div class="g-recaptcha" data-sitekey="' + _V2_KEY + '"></div>'
+                '<script>function onRecaptchaLoad(){grecaptcha.render("x")}</script>')
+
+
+def check_captcha_javascript_actually_runs():
+    """The discovery script shipped as ` => {` — no parameter list — so it was
+    a SyntaxError in every engine, logged at debug level and never noticed.
+    Nothing offline had ever parsed it, let alone run it."""
+    print("\n[captcha javascript]")
+    js = captcha_solver.CAPTCHA_DISCOVERY_JS.strip()
+    check("the discovery script is an arrow function with a parameter list",
+          js.startswith("() =>"))
+    check("the injection script is an arrow function taking the token",
+          captcha_solver.INJECT_TOKEN_FN.strip().startswith("(token) =>"))
+    selenium_src = open(os.path.join(REPO, "selenium_scraper.py"), encoding="utf-8").read()
+    check("Selenium INVOKES the discovery function rather than returning it",
+          "return ({CAPTCHA_DISCOVERY_JS})();" in selenium_src)
+
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        skip("the captcha scripts parse as JavaScript", "node not installed")
+    else:
+        sources = {
+            "discovery": f"const f = {captcha_solver.CAPTCHA_DISCOVERY_JS};",
+            "injection": f"const f = {captcha_solver.INJECT_TOKEN_FN};",
+            "selenium injection body":
+                f"function f() {{{captcha_solver.INJECT_TOKEN_BODY}}}",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, code in sources.items():
+                path = os.path.join(tmp, "s.js")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                rc = subprocess.run([node, "--check", path], capture_output=True,
+                                    text=True, timeout=60).returncode
+                check(f"the {label} script parses as JavaScript", rc == 0)
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        skip("the discovery script runs in a real page", "playwright not installed")
+        return
+    # Only a browser that will not START is a skip. An error from the
+    # script itself is a FAILURE: the first version of this check caught
+    # both, and on the unfixed code reported the SyntaxError it exists to
+    # find as "skipped, no browser".
+    info, error = None, None
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.launch()
+            except Exception as e:  # noqa: BLE001 — no browser binary here
+                skip("the discovery script runs in a real page",
+                     f"no browser: {type(e).__name__}")
+                return
+            try:
+                page = browser.new_page()
+                # Offline: every request is refused, so only the markup counts.
+                page.route("**/*", lambda route: route.abort())
+                page.set_content(_V2_EXPLICIT)
+                info = page.evaluate(captcha_solver.CAPTCHA_DISCOVERY_JS)
+            except Exception as e:  # noqa: BLE001 — reported as a failure below
+                error = f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
+            finally:
+                browser.close()
+    except Exception as e:  # noqa: BLE001 — the driver itself is unavailable
+        skip("the discovery script runs in a real page",
+             f"no playwright driver: {type(e).__name__}")
+        return
+    if not check("the discovery script runs in a real page without an error"
+                 + (f" ({error})" if error else ""), error is None):
+        return
+    runtime = captcha_solver.challenge_from_discovery(info)
+    check("run in a page, it finds the widget", bool(info and info.get("found")))
+    eq("and reads the explicit loader as v2", runtime and runtime.kind, "recaptcha_v2")
+
+
+def check_recaptcha_version_from_markup():
+    print("\n[recaptcha version]")
+    found = captcha_solver.detect_in_html(_V2_EXPLICIT, "https://example.test/")
+    eq("an explicitly rendered widget is v2, not v3 (a v2 task sent as v3 is "
+       "ERROR_CAPTCHA_UNSOLVABLE)", found and found.kind, "recaptcha_v2")
+    invisible = _V2_EXPLICIT.replace('data-sitekey=', 'data-size="invisible" data-sitekey=')
+    found = captcha_solver.detect_in_html(invisible, "https://example.test/")
+    eq("with data-size=invisible it is v2 invisible", found and found.kind,
+       "recaptcha_v2_invisible")
+    v3 = _V2_EXPLICIT.replace("render=explicit", "render=" + _V2_KEY)
+    found = captcha_solver.detect_in_html(v3, "https://example.test/")
+    eq("a loader rendering the sitekey itself is v3", found and found.kind,
+       "recaptcha_v3")
+
+
+def check_fingerprint_refusal_is_an_api_error():
+    """A refused or unreachable Fingerprint API is exit 5 with a reason, not
+    a traceback and exit 1. Offline: requests go to a proxy that does not
+    exist, and every variable a developer's own .env could set is overridden
+    with an empty one (which the loader treats as unset)."""
+    print("\n[fingerprint refusal]")
+    if ENGINES.get("playwright_scraper") is None:
+        skip("fingerprint refusal", "playwright not installed")
+        return
+    import subprocess
+    example = open(os.path.join(REPO, ".env.example"), encoding="utf-8").read()
+    url = re.search(r"^[A-Z]+_URL=(https?://\S+)", example, re.M).group(1)
+    fake_key = "f" + "a" * 31
+    env = dict(os.environ, HTTPS_PROXY="http://127.0.0.1:9",
+               HTTP_PROXY="http://127.0.0.1:9",
+               **{name: "" for name in env_config.ENV_KEYS})
+    with tempfile.TemporaryDirectory() as tmp:
+        run = subprocess.run(
+            [sys.executable, os.path.join(REPO, "playwright_scraper.py"),
+             "--url", url, "--pages", "1",
+             "--fingerprint", "--twocaptcha-key", fake_key,
+             "--out", os.path.join(tmp, "run")],
+            cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
+    text = run.stdout + run.stderr
+    # 5 is the family contract's remote-API code, whichever module names it.
+    eq("a failed fingerprint fetch exits 5, the remote-API code", run.returncode, 5)
+    check("with the reason and no traceback", "Traceback" not in text
+          and "Fingerprint API" in text)
+    check("and the key, which rides in this endpoint's query string, is not "
+          "printed", fake_key not in text)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.ERROR)
     print("lg-scraper offline suite")
@@ -3010,7 +3148,10 @@ def main() -> int:
                   check_packaging_matches_the_tree,
                   check_credentialled_paths_run,
                   check_concurrency_machinery,
-                  check_worker_pools_start_on_different_exits):
+                  check_worker_pools_start_on_different_exits,
+                  check_captcha_javascript_actually_runs,
+                  check_recaptcha_version_from_markup,
+                  check_fingerprint_refusal_is_an_api_error):
         group()
 
     print("\n" + "=" * 62)

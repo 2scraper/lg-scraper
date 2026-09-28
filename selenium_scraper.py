@@ -203,9 +203,9 @@ def _discover_captcha(driver, url: str):
     each engine growing its own dialect of the same script.
     """
     try:
-        info = driver.execute_script(f"return ({CAPTCHA_DISCOVERY_JS});")
+        info = driver.execute_script(f"return ({CAPTCHA_DISCOVERY_JS})();")
     except WebDriverException as e:
-        logger.debug("Runtime captcha discovery failed: %s", e)
+        logger.warning("Runtime captcha discovery failed: %s", e)
         return None
     return challenge_from_discovery(info, page_url=url)
 
