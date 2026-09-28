@@ -83,6 +83,12 @@ def check(label, condition):
     return bool(condition)
 
 
+def skip(label, why):
+    """Record a check that could not run, in this suite's own convention:
+    a passing line that SAYS it was skipped, so it is visible in the output."""
+    return check(f"{label} ({why} — SKIPPED)", True)
+
+
 def eq(label, actual, expected):
     ok = actual == expected
     if not ok:
