@@ -280,11 +280,11 @@ def playwright_init_script(fp: dict) -> str:
         "webglRenderer": found["webgl_renderer"]["value"],
     })
     return """
-( => {
+(() => {
   const fp = %s;
   const def = (obj, prop, value) => {
     if (value === null || value === undefined) return;
-    try { Object.defineProperty(obj, prop, {get:  => value, configurable: true}); }
+    try { Object.defineProperty(obj, prop, {get: () => value, configurable: true}); }
     catch (e) { /* already non-configurable: leave it rather than throw */ }
   };
   def(Navigator.prototype, 'platform', fp.platform);
@@ -303,7 +303,7 @@ def playwright_init_script(fp: dict) -> str:
       return original.apply(this, arguments);
     };
   }
-});
+})();
 """ % payload
 
 

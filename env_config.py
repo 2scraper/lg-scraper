@@ -304,6 +304,13 @@ def apply(args, keys=None, quiet=False):
 if __name__ == "__main__":
     # `python3 env_config.py` — report what is configured, without printing
     # any secret. Useful as a first step when a key "isn't being picked up".
+    import sys
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        # Answered WITHOUT reading .env: ci_checks runs every CLI's --help,
+        # and a help screen has no business opening a credentials file.
+        print("usage: python3 env_config.py\n\nReports which variables from "
+              ".env / the environment were picked up, never their values.")
+        sys.exit(0)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     where = load_env()
     print(f".env file:      {where or 'not found (this is fine — env vars still work)'}")

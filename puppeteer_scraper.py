@@ -19,7 +19,8 @@ Two engine-specific notes:
   * **Proxy credentials never reach the command line.** Chromium's
     `--proxy-server` switch is argv, readable by anything that can run `ps`,
     so the host and port go there and the credentials go through
-    `page.authenticate()`.
+    the DevTools Fetch domain (`Fetch.authRequired`) — pyppeteer's own
+    `page.authenticate()` relies on a CDP method current Chrome removed.
   * **Its bundled Chromium is from 2018.** pyppeteer downloads and launches
     that one by default, and on a current macOS it dies with "Browser closed
     unexpectedly" before the first fetch. Set `PYPPETEER_EXECUTABLE_PATH` to a
@@ -64,7 +65,8 @@ from captcha_solver import (CAPTCHA_DISCOVERY_JS, INJECT_TOKEN_FN,
 from output_writer import dedupe_by_sku, finish_run
 from product_parser import (SELECTORS, category_from_url, page_url,
                             parse_products, unsupported_locale_reason)
-from proxy_pool import (ROTATE_MODES, ProxyError, check_exit_or_raise,
+from proxy_pool import (CDP_CONNECT_ATTEMPTS, CDP_CONNECT_PAUSE_S, CDP_CONNECT_TIMEOUT_S,
+                        ROTATE_MODES, cdp_refusal_advice, cdp_retryable, ProxyError, check_exit_or_raise,
                         from_args as proxy_pool_from_args, mask,
                         redact_secret_patterns, to_pyppeteer)
 
@@ -78,7 +80,6 @@ RENDER_WAIT_MS = 15000
 NEXT_PAGE_SELECTOR = None
 # ---------------------------------------------------------------------------
 
-CONNECT_TIMEOUT_S = 30
 GOTO_TIMEOUT_MS = 60000
 
 
@@ -124,14 +125,29 @@ async def _open_browser(args, pool):
                     redact_secret_patterns(args.cdp_endpoint))
         # pyppeteer's connect has no timeout of its own — and its failures,
         # like Playwright's, quote the endpoint with its password in them.
-        try:
-            browser = await asyncio.wait_for(
-                connect(browserWSEndpoint=args.cdp_endpoint),
-                timeout=CONNECT_TIMEOUT_S)
-        except Exception as e:  # noqa: BLE001 — re-raised immediately, redacted
-            raise RuntimeError(
-                f"Could not connect to --cdp-endpoint: "
-                f"{redact_secret_patterns(str(e))}") from None
+        # pyppeteer never surfaces a refused handshake: the HTTP 500 dies in
+        # its receive loop, the caller sees only a timeout, and the orphaned
+        # task prints a traceback AFTER a correct exit. So: a short timeout
+        # per attempt, proxy_pool's retry policy, and that one traceback
+        # shape filtered (family template §26).
+        _quiet_refused_handshakes()
+        browser = None
+        for attempt in range(1, CDP_CONNECT_ATTEMPTS + 1):
+            try:
+                browser = await asyncio.wait_for(
+                    connect(browserWSEndpoint=args.cdp_endpoint),
+                    timeout=CDP_CONNECT_TIMEOUT_S)
+                break
+            except Exception as e:  # noqa: BLE001 — re-raised immediately, redacted
+                text = redact_secret_patterns(f"{type(e).__name__}: {e}")[:300]
+                if attempt < CDP_CONNECT_ATTEMPTS and cdp_retryable(text):
+                    logger.warning("Scraping Browser connect failed (%s); retrying in "
+                                   "%.0fs [%d/%d].", text, CDP_CONNECT_PAUSE_S, attempt,
+                                   CDP_CONNECT_ATTEMPTS)
+                    await asyncio.sleep(CDP_CONNECT_PAUSE_S)
+                    continue
+                raise RuntimeError(f"Could not connect to --cdp-endpoint: {text} — "
+                                   f"{cdp_refusal_advice(text)}") from None
         page = await browser.newPage()
         await _enable_auto_solve(page)
         return browser, page
@@ -162,8 +178,53 @@ async def _open_browser(args, pool):
     page = await browser.newPage()
     if credentials:
         # The password goes through the DevTools protocol, not through argv.
-        await page.authenticate(credentials)
+        await _authenticate_proxy(page, credentials)
     return browser, page
+
+
+def _quiet_refused_handshakes():
+    """Drop the orphaned-task traceback a refused CDP handshake leaves behind."""
+    loop = asyncio.get_running_loop()
+    default = loop.get_exception_handler()
+
+    def handler(lp, context):
+        exc = context.get("exception")
+        if exc is not None and type(exc).__name__ in ("InvalidStatusCode", "InvalidStatus",
+                                                       "InvalidHandshake"):
+            logger.debug("Ignored a refused-handshake task: %s", exc)
+            return
+        if default is not None:
+            default(lp, context)
+        else:
+            lp.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+
+
+async def _authenticate_proxy(page, creds):
+    """Answer the proxy's 407 through the CDP Fetch domain.
+
+    Not page.authenticate(): pyppeteer implements it with
+    Network.setRequestInterception, which current Chrome no longer has —
+    measured 2026-09-29 in a sibling repo against Chrome for Testing:
+    "Protocol error (Network.setRequestInterception): ... wasn't found",
+    exit 5 before the first request.
+    """
+    cdp = await page.target.createCDPSession()
+
+    def paused(event):
+        asyncio.ensure_future(cdp.send("Fetch.continueRequest", {"requestId": event["requestId"]}))
+
+    def auth(event):
+        asyncio.ensure_future(cdp.send("Fetch.continueWithAuth", {
+            "requestId": event["requestId"],
+            "authChallengeResponse": {"response": "ProvideCredentials",
+                                      "username": creds["username"],
+                                      "password": creds["password"]}}))
+
+    cdp.on("Fetch.requestPaused", paused)
+    cdp.on("Fetch.authRequired", auth)
+    await cdp.send("Fetch.enable", {"handleAuthRequests": True, "patterns": [{"urlPattern": "*"}]})
 
 
 async def _enable_auto_solve(page) -> None:

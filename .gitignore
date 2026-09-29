@@ -8,7 +8,23 @@ lg_products.*
 *.meta.json
 *_debug.html
 *_debug.png
+# --dump-html X over several pages writes X.page2, X.page3 …, which no
+# suffix rule above covers (family template §26).
+*.page[0-9]*
+
+# ANY working directory a live run writes into, not one chosen name: a
+# sibling committed a 1.5 MB raw dump through `live/` because only
+# `live_results/` was listed (family template §24).
+live/
 live_results/
+out/
+output/
+runs/
+results/
+tmp/
+scratch/
+dumps/
+captures/
 
 __pycache__/
 *.py[cod]
@@ -25,6 +41,11 @@ env/
 .idea/
 .vscode/
 *.log
-.env
 *.key
 secrets*
+
+# Every spelling of a working .env, not just `.env`: a `.env.bak` or
+# `.env.local` is exactly how a live key gets one `git add -A` from a commit
+# (family template §22). The negation keeps the documented example tracked.
+.env*
+!.env.example

@@ -5,6 +5,51 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
+## [Unreleased]
+
+### Fixed
+
+Found by a family-wide pass against the template on 2026-09-29; each one
+made a documented feature do less than it said while the run reported
+success.
+
+- **`CONTRIBUTING.md` promised checks the suite did not make**: that a
+  workflow installing anything but a hashed lock, a lock drifting from its
+  `.txt`, or an action referenced by tag fails the suite. It now does.
+- **`--fingerprint` never patched anything.** The init script it installs
+  was syntactically broken JavaScript (`( => {` — the parameter list and the
+  IIFE call were missing), and a syntax error in an init script is silent:
+  the page ran unpatched. Fixed, and the suite now runs `node --check` on
+  that script too — 0.2.2's "every shipped script" did not include it.
+- **pyppeteer could not authenticate a proxy on current Chrome.**
+  `page.authenticate()` uses `Network.setRequestInterception`, which
+  current Chrome no longer has ("wasn't found", exit 5 before the first
+  request — measured 2026-09-29 in rosreestr-scraper, which shares this
+  engine code). The engine now answers the proxy's 407 through the CDP
+  Fetch domain; verified against a local Basic-auth proxy.
+- **A failing suite could turn the engine CI job green.** The step ran
+  `smoke_test.py | tee` under GitHub's default shell, which has no
+  pipefail, so the job took tee's exit status. It now runs with
+  `shell: bash`, imports the engine by name first, and the suite fails if
+  any piped step lacks pipefail.
+- **Skipped checks were counted as passed.** A check that could not run
+  printed "SKIPPED" and was added to the pass count. Skips are now their own
+  count, listed at the end.
+- **`env_config.py --help` read `.env`.** `ci_checks.py` runs every CLI's
+  `--help`; a help screen now opens no credentials file.
+- **`.gitignore` let a renamed `.env` through** (`.env.bak`, `.env.local`),
+  and a run directory (`live/`) or a paged dump (`X.page3`). Now ignored by
+  shape, with a check.
+
+### Changed
+
+- **Connecting to the Scraping Browser API** follows one policy in every
+  engine (family template §26): three attempts 3 s apart for a locked
+  profile or an outage, none for an expired login (401), and a message that
+  names the status's own cause. pyppeteer's per-attempt timeout is 10 s (it
+  reports a refused handshake only as a timeout), and the orphaned-task
+  traceback that followed a correct exit is filtered.
+
 ## [0.2.2] — 2026-09-28
 
 ### Fixed

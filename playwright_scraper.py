@@ -66,7 +66,8 @@ from fingerprint_client import FingerprintError
 from output_writer import dedupe_by_sku, finish_run
 from product_parser import (SELECTORS, category_from_url, page_url,
                             parse_products, unsupported_locale_reason)
-from proxy_pool import (ROTATE_MODES, ProxyError, ProxyPool,
+from proxy_pool import (CDP_CONNECT_ATTEMPTS, CDP_CONNECT_PAUSE_S, CDP_CONNECT_TIMEOUT_S,
+                        ROTATE_MODES, cdp_refusal_advice, cdp_retryable, ProxyError, ProxyPool,
                         check_exit_or_raise,
                         from_args as proxy_pool_from_args, mask,
                         redact_secret_patterns, to_playwright)
@@ -201,12 +202,26 @@ def _connect_remote(pw, args):
     # underneath it. Measured 2026-09-19 against a real endpoint that answered
     # 401: the password appeared five times in one traceback. An exception
     # message is a log.
-    try:
-        browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
-    except Exception as e:  # noqa: BLE001 — re-raised immediately, redacted
-        raise RuntimeError(
-            f"Could not connect to --cdp-endpoint: "
-            f"{redact_secret_patterns(str(e))}") from None
+    #
+    # Retried per proxy_pool's CDP policy: a profile stays locked for ~2 s
+    # after a clean disconnect (family template §26), so a run started right
+    # after another met HTTP 500. A 401 (expired credentials) is not retried.
+    for attempt in range(1, CDP_CONNECT_ATTEMPTS + 1):
+        try:
+            browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
+            break
+        except Exception as e:  # noqa: BLE001 — re-raised immediately, redacted
+            # Whole message, on one line: the endpoint's host:port is what
+            # says WHICH exit failed, and it sits past the first line.
+            text = " ".join(redact_secret_patterns(str(e)).split())[:600]
+            if attempt < CDP_CONNECT_ATTEMPTS and cdp_retryable(text):
+                logger.warning("Scraping Browser connect failed (%s); retrying in %.0fs "
+                               "[%d/%d].", text, CDP_CONNECT_PAUSE_S, attempt,
+                               CDP_CONNECT_ATTEMPTS)
+                time.sleep(CDP_CONNECT_PAUSE_S)
+                continue
+            raise RuntimeError(f"Could not connect to --cdp-endpoint: {text} — "
+                               f"{cdp_refusal_advice(text)}") from None
     # Reuse the remote browser's existing context so its fingerprint, session
     # and exit stay intact.
     context = browser.contexts[0] if browser.contexts else browser.new_context()
