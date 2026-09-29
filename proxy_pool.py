@@ -371,3 +371,64 @@ def from_args(args) -> Optional[ProxyPool]:
         return ProxyPool([entry], rotate="per-run")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Connecting to the Scraping Browser API — one policy for every engine
+# ---------------------------------------------------------------------------
+# Measured in the family (template §26, 2026-09-24): a profile stays
+# `profile_locked` for 1.6-1.9 s after a CLEAN disconnect, so a second run
+# started straight after the first was refused with HTTP 500. Three attempts
+# 3 s apart ride that out, while a profile genuinely held by another run
+# still fails in about 9 s. And pyppeteer's connect never surfaces the 500
+# at all — only a timeout ends it — so its per-attempt timeout is short: a
+# successful connect took 0.8-0.95 s. The 500's body names the cause when it
+# is a lock: "profile_locked" (seen 2026-09-29 in rosreestr-scraper's canary,
+# where two jobs shared one profile — no retry window covers that).
+CDP_CONNECT_ATTEMPTS = 3
+CDP_CONNECT_PAUSE_S = 3.0
+CDP_CONNECT_TIMEOUT_S = 10.0
+
+
+def _has_status(text: str, *codes: str) -> bool:
+    """A status as a NUMBER on its own — never a digit run inside a port, a
+    duration or a request id (a bare "500" matched "15000ms")."""
+    return any(re.search(rf"(?<!\d){c}(?!\d)", text) for c in codes)
+
+
+def cdp_refusal_advice(error_text: str) -> str:
+    """What a failed Scraping Browser connect most likely means, by its status.
+
+    The old message explained a 500 whatever the status was, and every
+    expired endpoint in the family answers 401.
+    """
+    text = error_text or ""
+    if "profile_locked" in text:
+        # The service's own word for it, in the 500's body (seen 2026-09-29
+        # when two canary jobs shared one profile).
+        return ("the profile is in use by another connection (profile_locked): "
+                "one live connection per pid. Wait for the other run to finish, or "
+                "give each concurrent run its own pid.")
+    if _has_status(text, "401"):
+        return ("HTTP 401: the profile's credentials were refused — they expire "
+                "(about a day). Take fresh ones from the 2Captcha dashboard.")
+    if _has_status(text, "403"):
+        return "HTTP 403: this account may not use that profile or zone."
+    if _has_status(text, "500", "502", "503"):
+        return ("HTTP 5xx on the WebSocket upgrade: usually the profile is still "
+                "locked by another (or just-finished) connection — one live "
+                "connection per pid — or a service-side outage. Wait, or use "
+                "another pid.")
+    if "imeout" in text or not text.strip():
+        return ("no answer in time. pyppeteer reports a REFUSED handshake this "
+                "way too, so this may be the same 5xx; try the Playwright engine "
+                "to see the status.")
+    return "see the error above."
+
+
+def cdp_retryable(error_text: str) -> bool:
+    """Worth another attempt: a lock or an outage, never a refused login."""
+    text = error_text or ""
+    if _has_status(text, "401", "403"):
+        return False
+    return _has_status(text, "500", "502", "503") or "imeout" in text or not text.strip()
