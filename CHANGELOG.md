@@ -32,6 +32,12 @@ success.
   pipefail, so the job took tee's exit status. It now runs with
   `shell: bash`, imports the engine by name first, and the suite fails if
   any piped step lacks pipefail.
+- **The engine CI jobs had been failing, unseen.** Once pipefail made the
+  step's exit status real, all three engine jobs went red on the secret
+  scan: it walked into CI's own `.venv-<engine>` and read pip's and
+  selenium's vendored code as credentials. The scan now skips any directory
+  holding `pyvenv.cfg`, whatever it is called (template §23), and still
+  reads ordinary untracked files — both planted in a check.
 - **Skipped checks were counted as passed.** A check that could not run
   printed "SKIPPED" and was added to the pass count. Skips are now their own
   count, listed at the end.

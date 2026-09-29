@@ -92,11 +92,36 @@ SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "captures", "legacy",
              ".pytest_cache"}
 
 
+_VENV_CACHE = {}
+
+
+def _is_in_virtualenv(path):
+    """True if any ancestor of `path` under REPO is a virtualenv root.
+
+    A directory holding `pyvenv.cfg` IS a virtualenv, whatever it is called
+    (family template §23). The name set in SKIP_DIRS missed CI's own
+    `.venv-<engine>`, so the engine jobs scanned pip's and selenium's vendored
+    code and failed on it — hidden until pipefail made that job's exit status
+    real (2026-09-29).
+    """
+    for parent in path.parents:
+        cached = _VENV_CACHE.get(parent)
+        if cached is None:
+            cached = _VENV_CACHE[parent] = (parent / "pyvenv.cfg").is_file()
+        if cached:
+            return True
+        if parent == REPO:
+            break
+    return False
+
+
 def scanned_files():
     for path in sorted(REPO.rglob("*")):
         if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
             continue
         if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if _is_in_virtualenv(path):
             continue
         yield path
 

@@ -3208,6 +3208,33 @@ def check_family_sync_2026_09_29():
         check(f"the pipefail check found the piped steps it guards ({piped})", piped >= 1)
     else:
         skip("workflow pipefail", "no .github/workflows in this tree")
+    # 6. The secret scan skips a virtualenv by its marker, not its name —
+    #    and still reads an ordinary untracked directory. Planted both ways.
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("ci_checks_fs", os.path.join(REPO, ".github", "ci_checks.py"))
+    if spec and os.path.isdir(os.path.join(REPO, ".github")):
+        cc = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(cc)
+        venv = os.path.join(REPO, ".venv-plantedcheck")
+        plain = os.path.join(REPO, "plantedcheck-plain")
+        key = "b" * 32
+        try:
+            os.makedirs(os.path.join(venv, "lib"), exist_ok=True)
+            open(os.path.join(venv, "pyvenv.cfg"), "w").write("home = /usr\n")
+            open(os.path.join(venv, "lib", "vendored.py"), "w").write(f"# {key}\n")
+            os.makedirs(plain, exist_ok=True)
+            open(os.path.join(plain, "leak.py"), "w").write(f"# {key}\n")
+            cc._VENV_CACHE.clear()
+            scanned = {str(p) for p in cc.scanned_files()}
+            check("the scan skips a virtualenv whatever it is called (pyvenv.cfg)",
+                  not any(".venv-plantedcheck" in p for p in scanned))
+            check("...and still reads an ordinary untracked directory",
+                  any("plantedcheck-plain" in p for p in scanned))
+        finally:
+            shutil.rmtree(venv, ignore_errors=True)
+            shutil.rmtree(plain, ignore_errors=True)
+    else:
+        skip("secret scan virtualenv rule", "no .github in this tree")
     # 3. .gitignore by SHAPE: a renamed .env, a run directory, a paged dump.
     if shutil.which("git") and os.path.isdir(os.path.join(REPO, ".git")):
         for name, ignored in ((".env.bak", True), (".env.local", True), ("live/dump.html", True),
