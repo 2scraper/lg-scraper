@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
-## [Unreleased]
+## [0.2.3] — 2026-09-29
 
 ### Fixed
 
