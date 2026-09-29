@@ -92,6 +92,21 @@ jobs:
           # Proves each lock is self-consistent on its own.
           pip check
 
+      - name: A browser for this engine
+        # The suite launches the engine for real in places (the fingerprint-
+        # refusal check starts Chromium before it fetches). Without a browser
+        # that check had been red — hidden until pipefail (2026-09-29).
+        # Playwright brings its own Chromium; the other two use the runner's
+        # Google Chrome.
+        run: |
+          . .venv-${{ matrix.engine }}/bin/activate
+          if [ "${{ matrix.engine }}" = playwright ]; then
+            python -m playwright install --with-deps chromium
+          else
+            echo "PYPPETEER_EXECUTABLE_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+            google-chrome --version
+          fi
+
       - name: The suite, with THIS engine importable
         # The other two are absent by design, so the suite will report skips
         # for them; what must NOT happen is this engine's group skipping.

@@ -38,6 +38,10 @@ success.
   selenium's vendored code as credentials. The scan now skips any directory
   holding `pyvenv.cfg`, whatever it is called (template §23), and still
   reads ordinary untracked files — both planted in a check.
+- **The Playwright engine job never had a browser**, so the suite's
+  fingerprint-refusal check — which starts Chromium before it fetches —
+  crashed there with exit 1 instead of the expected 5. Also hidden until
+  pipefail; the engine jobs now install the browser they drive.
 - **Skipped checks were counted as passed.** A check that could not run
   printed "SKIPPED" and was added to the pass count. Skips are now their own
   count, listed at the end.
