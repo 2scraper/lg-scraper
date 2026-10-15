@@ -15,6 +15,8 @@ letting the three drift:
     unpainted    served, but the grid has not rendered yet      wait, then retry
     blocked      Akamai refused: 403, "Access Denied", or a
                  response not built out of LG's own assets      rotate, exit 3
+    parse_failed the catalogue API's own count says this page
+                 holds products, and it came back with none     stop, not complete
 
 The decision is DATA (`STATE_POLICY`), not three copies of an if-chain.
 
@@ -47,6 +49,32 @@ EMPTY = "empty"
 EXHAUSTED = "exhausted"
 UNPAINTED = "unpainted"
 BLOCKED = "blocked"
+PARSE_FAILED = "parse_failed"
+
+# How many paid captcha solves one page may buy, across EVERY call site and
+# every exit it is retried from. A rotation is a reason to fetch again, not a
+# fresh allowance: without a shared budget a page retried from three exits
+# bought three solves.
+SOLVES_PER_PAGE = 1
+
+
+class SolveBudget:
+    """The per-page solve allowance, checked BEFORE each purchase.
+
+    One instance per page, created before the block-retry loop and handed to
+    every solve call site for that page. Never reset on rotation.
+    """
+
+    def __init__(self, limit: int = SOLVES_PER_PAGE):
+        self.limit = limit
+        self.spent = 0
+
+    def spend(self) -> bool:
+        """Take one solve from the allowance; False when it is used up."""
+        if self.spent >= self.limit:
+            return False
+        self.spent += 1
+        return True
 
 # What a full page of the grid holds, measured on every capture: the API
 # ignores the form's `length` field and returns 12 either way.
@@ -83,7 +111,24 @@ STATE_POLICY = {
                           may_solve=False, blocked=False, complete=False),
     BLOCKED:   PagePolicy(retry=True, wait_first=False, rotate_exit=True,
                           may_solve=True, blocked=True, complete=False),
+    # The response was served and its own arithmetic says products exist, so
+    # fetching it again gives the same bytes and a different exit changes
+    # nothing: this is the parser (or a changed payload shape), not the site.
+    PARSE_FAILED: PagePolicy(retry=False, wait_first=False, rotate_exit=False,
+                             may_solve=False, blocked=False, complete=False),
 }
+
+
+def zero_rows_reason(state: Optional["PageState"]) -> str:
+    """The stop reason for a served page that yielded no rows.
+
+    Only EMPTY and EXHAUSTED are the site saying "nothing here"; any other
+    page that parses to zero rows is a page that was not read, and must not
+    end a run as complete.
+    """
+    if state is not None and state.state == UNPAINTED:
+        return "page_not_painted"
+    return "parser_found_nothing"
 
 
 @dataclass
@@ -175,6 +220,17 @@ def classify(html: Optional[str], status_code: Optional[int] = None,
         # products. Everything below this line weighs HTML — asset paths, a
         # challenge page's wording — and a JSON payload carries none of it,
         # so running those tests here would call every empty page a block.
+        expected = expected_records(total_results, page_num)
+        if expected:
+            # The site's own count says this page holds products. An empty
+            # answer here is a renamed row container or a parser that lost
+            # them — calling it "past the end" would report a complete run
+            # with pages unread.
+            return PageState(PARSE_FAILED,
+                             f"the catalogue API returned no products on page "
+                             f"{page_num}, where its own count of "
+                             f"{total_results} implies {expected}",
+                             total_results=total_results, status_code=status_code)
         if page_num > 1:
             return PageState(EXHAUSTED,
                              f"the catalogue API returns no products on page "

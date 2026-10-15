@@ -5,6 +5,63 @@ All notable changes to this project are documented here. The format follows
 [SemVer](https://semver.org/) as closely as a CLI toolkit can: a PATCH release
 means fixes, not that every flag is frozen.
 
+## [Unreleased]
+
+> **Behaviour changes.**
+> - **Exit 5 now means "no rows, and the content was never obtained".** A
+>   category page that never loaded, a catalogue API that failed on every
+>   attempt, a page with no catalogue form, a form pointing off-site, and a
+>   page the site's own count says holds products that parsed to none all
+>   exited 4 ("zero products") before. Exit 4 is now kept for the site's own
+>   "this category is empty / you are past its end". Scripts keyed on exit 4
+>   for those failures need updating.
+> - **A served page inside the category's own total that yields no rows is
+>   no longer "complete".** It used to end the run as `listing_exhausted`,
+>   exit 0. It is now `stop_reason: parser_found_nothing` (or
+>   `page_not_painted` in the browser engines): exit 6 with rows, exit 5
+>   without, and the page is listed in `pages_failed`.
+> - **The catalogue API refusing with 401/403/429/503 on every attempt is a
+>   block (exit 3)**, not an `api_error`.
+> - **Output files are no longer created 0600.** A new file gets the mode the
+>   umask gives it; an existing file keeps its own.
+> - **`catalog_client.py --proxy-rotate per-page` is now a usage error
+>   (exit 2).** That engine keeps one HTTP session for the whole run, so the
+>   value was accepted and did nothing.
+
+### Fixed
+
+- **CSV formula cells.** In the CSV only, a text cell beginning with `=`,
+  `+`, `-`, `@`, a tab, CR or LF gets a leading `'`; numbers and the JSON are
+  untouched, and the sidecar records `csv_cells_escaped`.
+- **One paid captcha solve per page.** Each retry from another exit called
+  the solver again, so a page retried from three exits could buy three
+  solves. Every browser engine now checks a per-page allowance before
+  buying, and a rotation does not reset it.
+- **The credential scan read 0 files from a clone under a directory named
+  `venv` or `captures`**, because it judged the absolute path. It now judges
+  the path inside the repository, also reads `.env*` backups, and fails if it
+  scanned nothing.
+- **Scraper API client:** `waitFor` is sent as an object (the string form is
+  refused with HTTP 422 and still billed), the target's status is read from
+  `http_code` rather than the API's verdict string, and the `x-debug` header
+  is logged with credentials redacted.
+- **`position` from the catalogue API counts the rows emitted**, so a
+  skipped record no longer leaves a gap that the rendered-grid path does not.
+- **The category page is retried** `--retries` times before the run gives up.
+- **Playwright and pyppeteer pass the navigation's HTTP status to the page
+  classifier**, so a refusal status is seen even when the body looks served.
+- `--url` help in the browser engines and the bug-report template described
+  another site's URLs; both now describe lg.com category URLs, and the
+  template lists `catalog_client.py`.
+- The weekly `pip-audit` job had been red since 2026-10-05 on two new urllib3
+  1.x advisories (PYSEC-2026-4175, PYSEC-2026-4177) in the pyppeteer lock.
+  pyppeteer 2.0.0 still requires `urllib3<2` and the fix is only in 2.8.0, so
+  they are ignored by ID beside the five already listed, and the README says
+  so.
+- The daily canary now fails on a block (exit 3) or on exit 5, instead of
+  passing a block from a GitHub runner as a notice: this path needs no
+  credential and has served those runners every day.
+
 ## [0.2.3] — 2026-09-29
 
 ### Fixed
@@ -36,7 +93,7 @@ success.
   step's exit status real, all three engine jobs went red on the secret
   scan: it walked into CI's own `.venv-<engine>` and read pip's and
   selenium's vendored code as credentials. The scan now skips any directory
-  holding `pyvenv.cfg`, whatever it is called (template §23), and still
+  holding `pyvenv.cfg`, whatever it is called, and still
   reads ordinary untracked files — both planted in a check.
 - **The Playwright engine job never had a browser**, so the suite's
   fingerprint-refusal check — which starts Chromium before it fetches —
@@ -54,7 +111,7 @@ success.
 ### Changed
 
 - **Connecting to the Scraping Browser API** follows one policy in every
-  engine (family template §26): three attempts 3 s apart for a locked
+  engine: three attempts 3 s apart for a locked
   profile or an outage, none for an expired login (401), and a message that
   names the status's own cause. pyppeteer's per-attempt timeout is 10 s (it
   reports a refused handshake only as a timeout), and the orphaned-task

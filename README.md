@@ -5,7 +5,7 @@
 [![canary](https://github.com/2scraper/lg-scraper/actions/workflows/canary.yml/badge.svg)](https://github.com/2scraper/lg-scraper/actions/workflows/canary.yml)
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
-[![engines](https://img.shields.io/badge/engines-catalogue--api%20%7C%20playwright%20%7C%20pyppeteer%20%7C%20selenium-lightgrey)](#four-ways-to-run-it)
+[![engines](https://img.shields.io/badge/engines-catalogue--api%20%7C%20playwright%20%7C%20pyppeteer%20%7C%20selenium-lightgrey)](#five-ways-to-run-it)
 [![runs without an account](https://img.shields.io/badge/runs%20without%20an%20account-yes-brightgreen)](#what-the-paid-products-buy-you)
 
 A working scraper for **lg.com** category pages — televisions, refrigerators,
@@ -141,7 +141,7 @@ Both were measured, and both would corrupt a run quietly:
 Extraction is scoped to `.product-list-box`, and any value wrapped in
 asterisks is discarded.
 
-## Four ways to run it
+## Five ways to run it
 
 | Script | Engine | Live status, 2026-09-21 |
 |---|---|---|
@@ -183,12 +183,14 @@ what CI, the canary and the Docker image install. A weekly `pip-audit` run
 checks every lock against the advisory databases.
 
 **The pyppeteer engine carries a known-vulnerable urllib3.** pyppeteer
-requires `urllib3<2`, and five published urllib3 advisories are fixed only in
-2.x — among them one where a cross-origin redirect can forward
-`Proxy-Authorization` to the new host (GHSA-qccp-gfcp-xxvc). In that engine's
-virtualenv `requests` uses the same urllib3, so the proxy preflight and the
-captcha API calls do too. The audit ignores exactly those five, by ID; prefer
-Playwright if you run with proxy credentials.
+requires `urllib3<2`, and seven published urllib3 advisories (as of
+2026-10-15) are fixed only in 2.x — among them one where a cross-origin
+redirect can forward `Proxy-Authorization` to the new host
+(GHSA-qccp-gfcp-xxvc), and one where the TLS settings meant for an HTTPS
+proxy and for the target server can be mixed up (PYSEC-2026-4175). In that
+engine's virtualenv `requests` uses the same urllib3, so the proxy preflight
+and the captcha API calls do too. The audit ignores exactly those seven, by
+ID; prefer Playwright if you run with proxy credentials.
 
 Credentials, when you need any, live in `.env` rather than on a command line:
 
@@ -227,8 +229,8 @@ What the 2Captcha products are for here:
 | 1 | crash |
 | 2 | bad usage — including an unsupported locale, and an exit that fails its preflight |
 | 3 | blocked before parsing (Akamai's 403 / "Access Denied") |
-| 4 | ran fine, zero products |
-| 5 | the remote API failed (`scraper_api_client.py`) |
+| 4 | the site itself reported the category empty, or past its end |
+| 5 | no rows, and the content was never obtained: the page or the API did not answer, the page carried no catalogue form, a remote API failed, or a page the site's own count says holds products parsed to none |
 | 6 | partial: some pages gathered, then the run stopped early |
 
 Every run that writes output also writes `<out>.meta.json` with `status`,
@@ -239,7 +241,7 @@ and the category's own `total_results` and `page_count`. `status` is one of:
 |---|---|---|
 | `complete` | 0 | the whole listing was read — the site ran out of products, every page it reported was fetched, or the products reached its own total |
 | `limited` | 0 | every page asked for was fetched, but `--pages` ended the run before the listing did: a sample |
-| `partial` | 6 | some pages were gathered, then a page failed |
+| `partial` | 6 | some pages were gathered, then a page failed — including a page inside the category's own total that came back with no rows (`stop_reason: parser_found_nothing`) |
 
 `diff_runs.py` refuses to compare two runs unless both are `complete`, both
 have a sidecar, and both read the same listing; `--force` overrides it. Until
@@ -248,7 +250,13 @@ against a full one reported the unread half of the category as removed.
 
 Output files are written through a temporary file and renamed into place, the
 `--out` directory is created if it is missing, and the sidecar is written
-last — a run killed half way leaves the previous files whole.
+last — a run killed half way leaves the previous files whole. A new file gets
+the mode your umask gives it; an existing one keeps its own.
+
+In the CSV only, a text cell starting with `=`, `+`, `-`, `@`, a tab or a
+newline is prefixed with `'` so a spreadsheet reads it as text; numbers and
+the JSON output are untouched, and the sidecar counts the escaped cells as
+`csv_cells_escaped`.
 
 ## Traps that look like bugs
 
@@ -277,7 +285,7 @@ cost the most time:
 ## Testing
 
 ```bash
-python3 smoke_test.py      # 449 checks with all three engines installed, no network, ~5s
+python3 smoke_test.py      # ~580 checks with no engine installed (2026-10-15), more with one; no network
 pytest -q                  # the same run, through the pytest entry point
 ```
 

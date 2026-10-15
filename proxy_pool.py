@@ -376,7 +376,7 @@ def from_args(args) -> Optional[ProxyPool]:
 # ---------------------------------------------------------------------------
 # Connecting to the Scraping Browser API — one policy for every engine
 # ---------------------------------------------------------------------------
-# Measured in the family (template §26, 2026-09-24): a profile stays
+# Measured 2026-09-24 on a sibling repo: a profile stays
 # `profile_locked` for 1.6-1.9 s after a CLEAN disconnect, so a second run
 # started straight after the first was refused with HTTP 500. Three attempts
 # 3 s apart ride that out, while a profile genuinely held by another run

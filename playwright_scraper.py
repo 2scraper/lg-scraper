@@ -40,7 +40,7 @@ Usage
 -----
     python3 playwright_scraper.py \\
         --url "https://www.lg.com/ru/televisions" \\
-        --pages 3 --format both --out saas_products
+        --pages 3 --format both --out tv_products
 
 Requires: pip install -r requirements.txt -r requirements-playwright.txt
           then: playwright install chromium   (not needed with --cdp-endpoint)
@@ -130,6 +130,15 @@ class PageOutcome:
         """The listing genuinely ended on this page."""
         return self.state is not None and self.state.policy.complete
 
+    @property
+    def read_nothing(self) -> bool:
+        """Served, not the end of the listing, and still no rows.
+
+        A page the run did not READ — the grid never painted, or the parser
+        lost its products — is never a reason to call the run complete.
+        """
+        return self.ok and not self.complete_here and not self.products
+
 
 # Chromium's own names for "the proxy is the problem, not the site". Matched
 # on the error text because Playwright surfaces them as a generic Error.
@@ -204,7 +213,7 @@ def _connect_remote(pw, args):
     # message is a log.
     #
     # Retried per proxy_pool's CDP policy: a profile stays locked for ~2 s
-    # after a clean disconnect (family template §26), so a run started right
+    # after a clean disconnect, so a run started right
     # after another met HTTP 500. A 401 (expired credentials) is not retried.
     for attempt in range(1, CDP_CONNECT_ATTEMPTS + 1):
         try:
@@ -332,7 +341,7 @@ def _wait_for_cards(page, timeout_ms: int = RENDER_WAIT_MS) -> int:
     return count
 
 
-def handle_captcha_if_present(page, args) -> None:
+def handle_captcha_if_present(page, args, budget) -> bool:
     """Runs after EVERY navigation, for ANY page — not scoped to one URL.
 
     Both detectors run and are reconciled; neither short-circuits the other.
@@ -341,12 +350,12 @@ def handle_captcha_if_present(page, args) -> None:
     """
     html = _content_when_settled(page)
     if html is None:
-        return
+        return False
     challenge = reconcile_detections(
         detect_in_html(html, page.url),
         detect_in_page(lambda js: page.evaluate(js), page_url=page.url))
     if not challenge:
-        return
+        return False
 
     # Detected is not blocking. lg.com renders reCAPTCHA v3 on its support
     # forms and nothing on a category page, so a detection on a page whose
@@ -359,7 +368,7 @@ def handle_captcha_if_present(page, args) -> None:
         logger.info("%s detected via %s, but the page is %s — not paying to "
                     "solve it. Pass --solve-captcha always to solve anyway.",
                     challenge.kind, challenge.source, state)
-        return
+        return False
 
     logger.warning("%s detected via %s (sitekey=%s) — attempting to solve.",
                    challenge.kind, challenge.source, challenge.sitekey)
@@ -371,14 +380,19 @@ def handle_captcha_if_present(page, args) -> None:
         logger.warning("No 2captcha API key, so this challenge cannot be solved "
                        "— continuing with whatever the page already holds. The "
                        "run reports exit 3 if it really was blocking.")
-        return
+        return False
+    if not budget.spend():
+        logger.warning("This page has already used its %d paid solve(s) — not "
+                       "buying another. A retry from another exit is a reason "
+                       "to fetch again, not a fresh allowance.", budget.limit)
+        return False
     try:
         token = solve(challenge, args.twocaptcha_key,
                       api_version=args.captcha_api, min_score=args.min_score)
     except Exception as e:  # noqa: BLE001 — a solver failure is not a crash
         logger.error("Solving the challenge failed (%s) — continuing with "
                      "whatever the page holds.", redact_secret_patterns(str(e)))
-        return
+        return False
 
     page.evaluate(INJECT_TOKEN_FN, token)
     if state.policy.blocked:
@@ -388,6 +402,7 @@ def handle_captcha_if_present(page, args) -> None:
         logger.info("Token injected. Reloading page to continue.")
         page.wait_for_timeout(1500)
         page.reload(wait_until="domcontentloaded", timeout=60000)
+        return True
     else:
         # Measured on 2026-09-19 against lg.com/signup, which carries a
         # real Turnstile: reloading here THROWS THE TOKEN AWAY, because a form
@@ -399,6 +414,7 @@ def handle_captcha_if_present(page, args) -> None:
                     "This page was not blocked, so it is NOT reloaded — a "
                     "reload would discard the token, and nothing here submits "
                     "a form.")
+    return False
 
 
 def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome:
@@ -418,13 +434,18 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     # same address just burns it further.
     block_retries = args.proxy_block_retries if (pool and len(pool) > 1) else 0
     html, state, load_failed = None, None, False
+    # One solve allowance for this page, shared by every attempt and
+    # every exit it is retried from.
+    budget = page_flow.SolveBudget()
 
     for block_attempt in range(block_retries + 1):
         logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
-        load_failed, exit_failed = False, None
+        load_failed, exit_failed, nav_status = False, None, None
         for attempt in range(1, args.retries + 1):
             try:
-                session.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                response = session.page.goto(url, wait_until="domcontentloaded",
+                                             timeout=60000)
+                nav_status = response.status if response is not None else None
                 load_failed = False
                 break
             except (PWTimeout, PWError) as e:
@@ -459,10 +480,14 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         if load_failed:
             break
 
-        handle_captcha_if_present(session.page, args)
+        if handle_captcha_if_present(session.page, args, budget):
+            # The page was reloaded after a solve: the navigation's status
+            # describes the interstitial it replaced, not this document.
+            nav_status = None
         cards = _wait_for_cards(session.page)
         html = _content_when_settled(session.page) or ""
-        state = page_flow.classify(html, url=session.page.url, page_num=page_num)
+        state = page_flow.classify(html, status_code=nav_status,
+                                   url=session.page.url, page_num=page_num)
         logger.info("Page %d is %s (%d card(s) rendered).", page_num, state, cards)
 
         if state.state == page_flow.UNPAINTED and state.policy.wait_first:
@@ -471,7 +496,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             # before deciding.
             session.page.wait_for_timeout(RENDER_WAIT_MS)
             html = _content_when_settled(session.page) or html
-            state = page_flow.classify(html, url=session.page.url, page_num=page_num)
+            state = page_flow.classify(html, status_code=nav_status,
+                                       url=session.page.url, page_num=page_num)
             logger.info("After waiting, page %d is %s.", page_num, state)
 
         if not state.policy.rotate_exit:
@@ -588,10 +614,19 @@ def _fetch_pages_concurrently(args, pool, specs, concurrency: int):
                                                   page_num, url)
                         with results_lock:
                             results.append(outcome)
-                        if outcome.ok and not outcome.products:
-                            logger.info("[%s] page %d returned no products — "
-                                        "treating that as the end of the listing "
-                                        "and stopping dispatch.", name, page_num)
+                        if outcome.complete_here:
+                            logger.info("[%s] page %d is past the end of the "
+                                        "listing — stopping dispatch.",
+                                        name, page_num)
+                            exhausted.set()
+                        elif outcome.read_nothing:
+                            # Served but not read: not the end of the
+                            # listing, so the run will be partial. Stop
+                            # spending requests on pages after it.
+                            logger.warning("[%s] page %d was served but yielded "
+                                           "no products (%s) — stopping "
+                                           "dispatch.", name, page_num,
+                                           outcome.state)
                             exhausted.set()
                 finally:
                     session.close()
@@ -690,6 +725,8 @@ def scrape(args) -> int:
             elif first.complete_here:
                 stop_reason = ("no_results" if first.state.state == page_flow.EMPTY
                                else "listing_exhausted")
+            elif first.read_nothing:
+                stop_reason = page_flow.zero_rows_reason(first.state)
             elif args.pages > 1:
                 # Page 2 is fetched sequentially whatever --concurrency says:
                 # it is what proves pages can be addressed by URL at all.
@@ -701,8 +738,10 @@ def scrape(args) -> int:
                     stop_reason = ("page_load_timeout" if second.load_failed
                                    else f"blocked_{(second.state.vendor if second.state else 'unknown')}")
                     blocked = bool(second.state and second.state.policy.blocked)
-                elif second.complete_here or not second.products:
+                elif second.complete_here:
                     stop_reason = "listing_exhausted"
+                elif second.read_nothing:
+                    stop_reason = page_flow.zero_rows_reason(second.state)
                 elif not addressable:
                     # The constructed URL came back with page 1's products.
                     # Stopping and SAYING so is the whole point: this is the
@@ -726,11 +765,14 @@ def scrape(args) -> int:
                         more, unattempted, ran_out = _fetch_pages_concurrently(
                             args, pool, specs, concurrency)
                         outcomes.extend(more)
-                        failed = [o for o in more if not o.ok]
+                        failed = [o for o in more if not o.ok or o.read_nothing]
                         if failed:
                             worst = min(failed, key=lambda o: o.page_num)
-                            stop_reason = ("page_load_timeout" if worst.load_failed
-                                           else f"blocked_{(worst.state.vendor if worst.state else 'unknown')}")
+                            if worst.read_nothing:
+                                stop_reason = page_flow.zero_rows_reason(worst.state)
+                            else:
+                                stop_reason = ("page_load_timeout" if worst.load_failed
+                                               else f"blocked_{(worst.state.vendor if worst.state else 'unknown')}")
                             blocked = any(o.state and o.state.policy.blocked for o in more)
                         elif ran_out:
                             stop_reason = "listing_exhausted"
@@ -750,8 +792,11 @@ def scrape(args) -> int:
                                                else f"blocked_{(outcome.state.vendor if outcome.state else 'unknown')}")
                                 blocked = bool(outcome.state and outcome.state.policy.blocked)
                                 break
-                            if outcome.complete_here or not outcome.products:
+                            if outcome.complete_here:
                                 stop_reason = "listing_exhausted"
+                                break
+                            if outcome.read_nothing:
+                                stop_reason = page_flow.zero_rows_reason(outcome.state)
                                 break
                             fresh = [p for p in outcome.products
                                      if p.sku is None or p.sku not in seen]
@@ -780,8 +825,9 @@ def scrape(args) -> int:
                         "earlier page.", oc.page_num, len(oc.products) - len(fresh))
         all_products.extend(fresh)
 
-    ok_pages = [o for o in outcomes if o.ok]
-    failed_pages = [o.page_num for o in outcomes if not o.ok]
+    # A page served but not read is a failed page, not a completed one.
+    ok_pages = [o for o in outcomes if o.ok and not o.read_nothing]
+    failed_pages = [o.page_num for o in outcomes if not o.ok or o.read_nothing]
     final_url = (max(ok_pages, key=lambda o: o.page_num).final_url
                  if ok_pages else args.url)
 
@@ -796,8 +842,8 @@ def scrape(args) -> int:
 def parse_args():
     p = argparse.ArgumentParser(description="LG catalogue scraper (Playwright edition)")
     p.add_argument("--url", default=None,
-                   help="A lg.com listing URL: /search with any filter[...] "
-                        "parameters, or a category shortcut such as /websites. "
+                   help="An lg.com/ru or lg.com/ua category URL, e.g. "
+                        "https://www.lg.com/ru/televisions. "
                         "Required unless LG_URL is set in the environment "
                         "or in .env.")
     p.add_argument("--category", default=None,
@@ -853,7 +899,9 @@ def parse_args():
     p.add_argument("--allow-empty", action="store_true",
                    help="Write output files even when 0 products were found. Off by "
                         "default so a failed run cannot overwrite a good result "
-                        "with an empty one; the exit code is 4 either way.")
+                        "with an empty one. The exit code is the same either "
+                        "way: 4 for an empty category, 5 when the content was "
+                        "never obtained.")
     p.add_argument("--fingerprint", action="store_true",
                    help="Fetch a fingerprint from 2captcha's Fingerprint API and "
                         "apply it to the launched browser. Needs --twocaptcha-key. "

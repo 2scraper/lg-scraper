@@ -27,6 +27,7 @@ body:
     attributes:
       label: Which engine
       options:
+        - catalog_client.py
         - playwright_scraper.py
         - puppeteer_scraper.py
         - selenium_scraper.py
@@ -43,7 +44,7 @@ body:
       options:
         - A browser the script launched itself
         - A remote browser over --cdp-endpoint
-        - No browser (scraper_api_client.py over plain HTTP)
+        - No browser (catalog_client.py or scraper_api_client.py over plain HTTP)
         - Not applicable
     validations:
       required: true
@@ -54,8 +55,9 @@ body:
       label: Exit code
       description: >-
         `echo $?` straight after the run. These mean specific things — 3 is a
-        challenge page, 4 is "ran fine, found nothing", 124 is a self-imposed
-        timeout. The table is in the README.
+        challenge page, 4 is "the site reported the category empty", 5 is "the
+        content was never obtained", 6 is a partial run. The table is in the
+        README.
       placeholder: "4"
     validations:
       required: true
@@ -67,9 +69,9 @@ body:
       description: With credentials replaced by `***`.
       render: shell
       placeholder: |
-        python3 playwright_scraper.py \
-          --url "https://lg.com/search?filter%5Bproperty_type%5D=saas" \
-          --pages 1 --out girls
+        python3 catalog_client.py \
+          --url "https://www.lg.com/ru/televisions" \
+          --pages 3 --out tv_products
     validations:
       required: true
 
@@ -89,7 +91,7 @@ body:
     attributes:
       label: What you expected instead
       placeholder: >-
-        96 products, as the README says a category page yields.
+        50 products across 5 pages, as the category's own total says.
     validations:
       required: true
 

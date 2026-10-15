@@ -125,7 +125,7 @@ jobs:
           esac
           # The import itself, first: it fails BY NAME, because every engine
           # imports its driver at module level, whatever wording the suite
-          # uses for a skip (family template §26 — the grep below fired in
+          # uses for a skip (a grep for the skip wording fired in
           # only 2 of 31 sibling suites when this was measured).
           python -c "import $module"
           python smoke_test.py | tee smoke.log
