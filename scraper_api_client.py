@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-#!/usr/bin/env python3
 """
 lg-scraper — 2Captcha Scraper API edition (fourth engine)
 ===========================================================
@@ -28,13 +27,17 @@ API surface used (per https://2captcha.com/scraper/scraper-api/api)
     Authorization: Bearer <API_KEY>
     {"task_type": "scrape", "url": ..., "data_format": "raw",
      "format": "json", "timeout": 1..120,
-     "waitFor": "<JSON *string*, not an object>",
+     "waitFor": {"text": ...} | {"element": ..., "checkVisible": true}
+                | {"state": "load" | "domcontentloaded"},
      "cdpurl": "ws://user:pass@host:port"}
-  -> 200 {"status": 200, "headers": {...}, "body": "<!DOCTYPE html>..."}
+  -> 200 {"status": "<the API's verdict>", "http_code": <target status>,
+          "headers": {...}, "body": "<!DOCTYPE html>..."}
 
-`waitFor` must be a JSON *string* (double-encoded), and the parameter is
-spelled `cdpurl` (all lowercase) while `waitFor` is camelCase — the API's
-own inconsistency, not a typo here.
+`waitFor` is a JSON OBJECT. The double-encoded string form this client used
+to send is refused by the API with HTTP 422 and still billed. The parameter
+is spelled `cdpurl` (all lowercase) while `waitFor` is camelCase — the API's
+own inconsistency, not a typo here. The target page's HTTP status is
+`http_code`; `status` is the API's own verdict string.
 
 Usage
 -----
@@ -48,6 +51,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from typing import List, Optional, Tuple
@@ -76,18 +80,41 @@ MAX_API_TIMEOUT = 120
 EXIT_API_ERROR = 5
 
 
-def _build_wait_for(args) -> Optional[str]:
-    """`waitFor` as the JSON STRING the API wants, or None.
+# A JSON field carrying a secret, as an x-debug header echoing the task back
+# may spell it: "password": "...", "key": "...". The URL and key=value forms
+# are handled by redact_secret_patterns.
+_SECRET_JSON_FIELD_RE = re.compile(
+    r'("(?:(?:client)?key|token|api[_-]?key|password|authorization)"\s*:\s*")'
+    r'[^"]*(")', re.IGNORECASE)
+
+
+def redact_debug_header(value: str) -> str:
+    """The x-debug header, safe to log.
+
+    The API echoes back the task it ran, so a run routed through a
+    credentialed `--cdp-url` would otherwise put that endpoint's username and
+    password into the log. Redaction rather than an allowlist of fields: the
+    cost and timing figures this is logged FOR must survive the day the API
+    adds a field.
+    """
+    return _SECRET_JSON_FIELD_RE.sub(r"\1***\2", redact_secret_patterns(value))
+
+
+def _build_wait_for(args) -> Optional[dict]:
+    """`waitFor` as the JSON OBJECT the API wants, or None.
+
+    An object, not a JSON-encoded string: the string form is refused with
+    HTTP 422 and the refused task is still billed.
 
     Not needed on lg.com (see the module docstring); kept because a
     future page kind, or a run routed through `--cdp-url`, may want it.
     """
     if args.wait_text:
-        return json.dumps({"text": args.wait_text})
+        return {"text": args.wait_text}
     if args.wait_element:
-        return json.dumps({"element": args.wait_element, "checkVisible": True})
+        return {"element": args.wait_element, "checkVisible": True}
     if args.wait_state:
-        return json.dumps({"state": args.wait_state})
+        return {"state": args.wait_state}
     return None
 
 
@@ -97,13 +124,13 @@ def fetch_html(args, url: str) -> Tuple[str, Optional[int]]:
         "task_type": "scrape",
         "url": url,
         "data_format": "raw",    # we want HTML; product_parser does the rest
-        "format": "json",        # so we get {"status", "headers", "body"}
+        "format": "json",        # {"status": verdict, "http_code", "headers", "body"}
         "timeout": min(args.timeout, MAX_API_TIMEOUT),
     }
     wait_for = _build_wait_for(args)
     if wait_for:
         payload["waitFor"] = wait_for
-        logger.info("waitFor: %s", wait_for)
+        logger.info("waitFor: %s", json.dumps(wait_for))
     if args.cdp_url:
         payload["cdpurl"] = args.cdp_url
         logger.info("Routing through an existing browser session: %s",
@@ -124,7 +151,7 @@ def fetch_html(args, url: str) -> Tuple[str, Optional[int]]:
     # x-debug header — the only place the real cost of the call shows up.
     debug = resp.headers.get("x-debug")
     if debug:
-        logger.info("x-debug: %s", debug)
+        logger.info("x-debug: %s", redact_debug_header(debug))
 
     if resp.status_code != 200:
         # 422 = the task ran and errored (an unreachable cdpurl does this);
@@ -135,9 +162,17 @@ def fetch_html(args, url: str) -> Tuple[str, Optional[int]]:
 
     body = resp.json()
     html = body.get("body") or ""
-    upstream = body.get("status")
-    logger.info("Upstream page status %s, %d bytes of HTML.", upstream, len(html))
-    return html, upstream if isinstance(upstream, int) else None
+    # The TARGET's status is `http_code`. `status` is the API's own verdict
+    # string ("success", "warn"), which reads "warn" on a 200 and on a 403
+    # alike — so reading it handed the classifier None and a target 403 was
+    # never seen. Fall back to `status` only if it is itself an integer.
+    upstream = body.get("http_code")
+    if not isinstance(upstream, int) or isinstance(upstream, bool):
+        legacy = body.get("status")
+        upstream = (legacy if isinstance(legacy, int)
+                    and not isinstance(legacy, bool) else None)
+    logger.info("Upstream page HTTP status %s, %d bytes of HTML.", upstream, len(html))
+    return html, upstream
 
 
 def _fetch_page(args, page_num: int, url: str):
@@ -221,6 +256,10 @@ def scrape(args) -> int:
     elif state.policy.complete:
         stop_reason = ("no_results" if state.state == page_flow.EMPTY
                        else "listing_exhausted")
+    elif not products:
+        # Served, not the site's own "nothing here", and no rows: the page
+        # was not read. Never a complete run.
+        stop_reason = page_flow.zero_rows_reason(state)
     elif args.pages > 1:
         seen = {p.sku for p in products if p.sku}
         first_products = products
@@ -228,6 +267,7 @@ def scrape(args) -> int:
             time.sleep(args.delay)
             state, products = _fetch_page(args, page_num, page_url(args.url, page_num))
             if state is None:
+                outcomes.append((page_num, None, []))
                 stop_reason = "api_error"
                 break
             outcomes.append((page_num, state, products))
@@ -235,8 +275,11 @@ def scrape(args) -> int:
                 stop_reason = f"blocked_{state.vendor}"
                 blocked = True
                 break
-            if state.policy.complete or not products:
+            if state.policy.complete:
                 stop_reason = "listing_exhausted"
+                break
+            if not products:
+                stop_reason = page_flow.zero_rows_reason(state)
                 break
             if page_num == 2:
                 # The same addressability check the browser engines run: this
@@ -265,8 +308,14 @@ def scrape(args) -> int:
     for page_num, _state, products in sorted(outcomes, key=lambda o: o[0]):
         all_products.extend(dedupe_by_sku(products, merged_seen))
 
-    ok_pages = [o for o in outcomes if o[1] is not None and not o[1].policy.blocked]
-    failed = [o[0] for o in outcomes if o[1] is None or o[1].policy.blocked]
+    def _read(o) -> bool:
+        # Fetched, not blocked, and either rows or the site's own "nothing
+        # here". A served page that yielded no rows was not read.
+        return (o[1] is not None and not o[1].policy.blocked
+                and (bool(o[2]) or o[1].policy.complete))
+
+    ok_pages = [o for o in outcomes if _read(o)]
+    failed = [o[0] for o in outcomes if not _read(o)]
     return finish_run(all_products, args.out, args.format, args.allow_empty,
                       blocked=blocked, stop_reason=stop_reason,
                       pages_requested=args.pages, pages_completed=len(ok_pages),

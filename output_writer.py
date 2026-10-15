@@ -126,6 +126,18 @@ def _atomic_write(path: str, write, newline: Optional[str] = None) -> None:
             write(f)
             f.flush()
             os.fsync(f.fileno())
+        # mkstemp creates the file at 0600 and os.replace keeps that mode, so
+        # without this every output would be readable by its owner only. An
+        # existing target keeps its OWN mode (someone may have set it on
+        # purpose); a new one gets what open() would have given it under the
+        # current umask. Never a flat 0644: that narrows 0664 under umask 002.
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -140,23 +152,63 @@ def write_json(products: List[Product], path: str) -> None:
                                             ensure_ascii=False, indent=2))
 
 
-def write_csv(products: List[Product], path: str) -> None:
+# A spreadsheet treats a cell beginning with one of these as a FORMULA
+# rather than as text. `=HYPERLINK(...)`, `+cmd|...` and `@SUM(...)` are the
+# classic shapes; the tab and the two newlines are here because some readers
+# strip a leading one and then execute whatever followed it.
+CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+# Excel, Google Sheets and LibreOffice read a leading apostrophe as "the rest
+# of this cell is text" and do not display it. A consumer parsing the file
+# with the csv module DOES see it, which is why the count goes into the
+# sidecar as `csv_cells_escaped` rather than staying silent.
+CSV_FORMULA_ESCAPE = "'"
+
+
+def _csv_escape(v):
+    """Neutralise a formula-shaped cell. Returns (value, was_escaped).
+
+    Only STRINGS are touched: escaping a number would turn -5 into text and
+    break every sum over the column. CSV only, on purpose: the JSON output
+    keeps the site's bytes exactly as served.
+    """
+    if isinstance(v, str) and v.startswith(CSV_FORMULA_LEADS):
+        return CSV_FORMULA_ESCAPE + v, True
+    return v, False
+
+
+def write_csv(products: List[Product], path: str) -> int:
+    """Write the CSV; return how many cells were formula-escaped."""
     # An empty result still gets the header row. A zero-byte file makes a
     # consumer fail on read (no columns to parse) instead of reading a valid
     # table with zero rows.
     fieldnames = list(asdict(products[0] if products else Product()).keys())
+    escaped = [0]
 
     def write(f):
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for p in products:
-            writer.writerow(asdict(p))
+            row = {}
+            for k, v in asdict(p).items():
+                row[k], hit = _csv_escape(v)
+                escaped[0] += hit
+            writer.writerow(row)
     _atomic_write(path, write, newline="")
+    return escaped[0]
 
 
 # Exit code used when a run completes but produced nothing. Distinct from 1
 # (crash) so a caller can tell "ran, found nothing" from "blew up".
 EXIT_NO_PRODUCTS = 4
+
+# Exit code for a run that holds NOTHING because the content was never
+# obtained: the category page did not load, the catalogue API failed on every
+# attempt, the page carried no catalogue form, or a served page that should
+# have held products parsed to none. Distinct from EXIT_NO_PRODUCTS, which is
+# only the site's OWN answer that the category is empty — a pipeline must be
+# able to tell "LG has no products here" from "we never got the page".
+EXIT_NOT_OBTAINED = 5
 
 # Exit code for a run blocked by a bot-check/challenge page before parsing
 # even started — distinct from EXIT_NO_PRODUCTS so a caller can tell "the
@@ -248,7 +300,7 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
 
 
 def save(products: List[Product], out_prefix: str, fmt: str,
-         allow_empty: bool = False) -> int:
+         allow_empty: bool = False, stats: Optional[dict] = None) -> int:
     """Write JSON/CSV and return a process exit code.
 
     On zero products, nothing is written at all unless `allow_empty`. A
@@ -271,8 +323,17 @@ def save(products: List[Product], out_prefix: str, fmt: str,
         write_json(products, f"{out_prefix}.json")
         print(f"[+] Saved {len(products)} products -> {out_prefix}.json")
     if fmt in ("csv", "both"):
-        write_csv(products, f"{out_prefix}.csv")
+        escaped = write_csv(products, f"{out_prefix}.csv")
         print(f"[+] Saved {len(products)} products -> {out_prefix}.csv")
+        # Through `stats` rather than the return value, which is an EXIT
+        # CODE. finish_run threads it into the sidecar.
+        if stats is not None:
+            stats["csv_cells_escaped"] = escaped
+        if escaped:
+            print(f"[!] {escaped} CSV cell(s) began with a formula character "
+                  f"and were prefixed with {CSV_FORMULA_ESCAPE!r} so a "
+                  f"spreadsheet reads them as text. The JSON output is "
+                  f"unchanged — see csv_cells_escaped in the sidecar.")
     return 0 if products else EXIT_NO_PRODUCTS
 
 
@@ -348,7 +409,8 @@ def finish_run(products: List[Product], out_prefix: str, fmt: str,
             os.unlink(f"{out_prefix}.meta.json")
         except FileNotFoundError:
             pass
-    rc = save(products, out_prefix, fmt, allow_empty=allow_empty)
+    stats: dict = {}
+    rc = save(products, out_prefix, fmt, allow_empty=allow_empty, stats=stats)
 
     if wrote_output:
         if products and complete:
@@ -363,17 +425,32 @@ def finish_run(products: List[Product], out_prefix: str, fmt: str,
             # An explicitly empty result that the site itself reported as
             # empty is a complete answer, not a failure.
             status = "complete"
-        write_run_meta(out_prefix, run_meta(
+        meta = run_meta(
             status=status, stop_reason=stop_reason,
             pages_requested=pages_requested, pages_completed=pages_completed,
             pages_failed=pages_failed, total_results=total_results,
             addressable=addressable, page_count=page_count,
-            start_url=start_url, final_url=final_url, products=len(products)))
+            start_url=start_url, final_url=final_url, products=len(products))
+        # Housekeeping goes UNDER the run's own keys, so it can never
+        # overwrite one of them.
+        write_run_meta(out_prefix, {**stats, **meta})
 
     if not products:
         # Nothing gathered at all: a challenge outranks "empty listing",
         # because it says something stood between the run and the content.
-        return EXIT_BLOCKED if blocked else rc
+        if blocked:
+            return EXIT_BLOCKED
+        # Exit 4 is a claim about the CATALOGUE — the site said it is empty
+        # or exhausted — so it needs a stop reason that proves it. Every
+        # other reason means the content was never obtained, and a rule over
+        # the complete set (rather than a list of failure reasons) cannot let
+        # a reason added later fall through to "the category is empty".
+        if complete:
+            return EXIT_NO_PRODUCTS
+        print(f"[!] No products, and the content was never obtained "
+              f"({stop_reason}) — exit {EXIT_NOT_OBTAINED}, not "
+              f"{EXIT_NO_PRODUCTS}: nothing here says the category is empty.")
+        return EXIT_NOT_OBTAINED
     if limited:
         total = f" of the {total_results} the listing holds" if total_results else ""
         print(f"[i] Limited run: read the {pages_completed} page(s) asked for, "

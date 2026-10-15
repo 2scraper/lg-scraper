@@ -43,6 +43,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import redirect_stdout
@@ -56,7 +58,8 @@ import env_config
 import output_writer
 import captcha_solver
 import catalog_client
-from output_writer import (EXIT_BLOCKED, EXIT_NO_PRODUCTS, EXIT_PARTIAL, Product,
+from output_writer import (EXIT_BLOCKED, EXIT_NO_PRODUCTS, EXIT_NOT_OBTAINED,
+                           EXIT_PARTIAL, Product,
                            dedupe_by_sku, finish_run, save, write_csv)
 from product_parser import (category_from_url, page_url, parse_products)
 
@@ -91,7 +94,7 @@ def skip(label, why):
 
     This used to be `check(f"{label} ({why} — SKIPPED)", True)`: a line that
     said "skipped" and was COUNTED as passed, which inflates the pass count
-    and reads identically to a check that ran (family template §10). Skips
+    and reads identically to a check that ran. Skips
     are now their own count, listed at the end of the run.
     """
     SKIPPED.append(f"{label} ({why})")
@@ -1227,12 +1230,25 @@ def check_page_states():
     api_empty = page_flow.classify("", record_count=0, page_num=1, total_results=0)
     eq("an API page with no products is empty, not blocked",
        api_empty.state, page_flow.EMPTY)
-    api_past_end = page_flow.classify("", record_count=0, page_num=4,
-                                      total_results=203)
+    api_past_end = page_flow.classify("", record_count=0, page_num=6,
+                                      total_results=50)
     eq("and past the end of the category it is exhausted",
        api_past_end.state, page_flow.EXHAUSTED)
     check("neither is ever reported as a block",
           not api_empty.policy.blocked and not api_past_end.policy.blocked)
+    # INSIDE the category's own total, an empty answer is not the end: page
+    # 4 of 50 products should hold 12. Calling it exhausted reported a
+    # complete run with whole pages unread (a renamed row container did it).
+    api_lost = page_flow.classify("", record_count=0, page_num=4,
+                                  total_results=50)
+    eq("an empty API page inside the category's own total is a parse failure",
+       api_lost.state, page_flow.PARSE_FAILED)
+    check("which is neither complete, nor blocked, nor retried",
+          not api_lost.policy.complete and not api_lost.policy.blocked
+          and not api_lost.policy.retry)
+    eq("the same on page 1, when its own count says products exist",
+       page_flow.classify("", record_count=0, page_num=1,
+                          total_results=50).state, page_flow.PARSE_FAILED)
 
     # The shell: LG's own assets, none of the grid's machinery. Measured on
     # the real pages — a served category page carries `categoryFilterForm`
@@ -1621,7 +1637,7 @@ def check_output_contract():
 
 
 # ---------------------------------------------------------------------------
-# 5. The engines: parity, and the five checks §17 says to steal
+# 5. The engines: parity, and the cross-engine consistency checks
 # ---------------------------------------------------------------------------
 # The flag contract every engine in the family exposes, as
 # argparse destinations. Asserted in BOTH directions: a missing flag fails,
@@ -2268,7 +2284,7 @@ def check_credentialled_paths_run():
                 pages = 1
                 dump_html = None
                 out = os.path.join(tmp, "api_run")
-                category = "saas"
+                category = "televisions"
                 format = "json"
                 allow_empty = False
                 retries = 0
@@ -2420,10 +2436,20 @@ def _catalog_args(tmp, **kw):
     return SimpleNamespace(**base)
 
 
-def _api_payload(records):
-    """A catalogue-API answer carrying exactly `records`, in the real shape."""
+def _api_payload(records, **page_info):
+    """A catalogue-API answer carrying exactly `records`, in the real shape.
+
+    `page_info` overrides keys of the API's own pagination block; a value of
+    None removes the key.
+    """
     page = json.loads(API_FIXTURE_JSON)
     page["data"][0]["productList"] = records
+    info = page["data"][0]["pageInfo"]
+    for key, value in page_info.items():
+        if value is None:
+            info.pop(key, None)
+        else:
+            info[key] = value
     return page
 
 
@@ -2471,23 +2497,68 @@ def check_catalog_client_run():
     """
     print("\n[the catalogue engine, end to end]")
     served = (PAGE_FIXTURE_HTML, 200)
-    full = _api_payload(json.loads(API_FIXTURE_JSON)["data"][0]["productList"])
+    records = json.loads(API_FIXTURE_JSON)["data"][0]["productList"]
+    full = _api_payload(records)
     empty = _api_payload([])
+    # A two-product category that states no page count, so the run has to
+    # ask for page 2 and is told "nothing more". The fixture's own page 1
+    # says 50 products in 5 pages, and an empty page 2 under THAT count is a
+    # lost page, not the end — see the next block.
+    small = _api_payload(records, totalCount=2, pageCount=None)
 
     with tempfile.TemporaryDirectory() as tmp:
-        rc, rows, meta, calls = _run_catalog(tmp, served, [(full, 200), (empty, 200)])
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(small, 200), (empty, 200)])
         eq("a run that reaches the end of the catalogue exits 0", rc, 0)
         eq("and writes the products the API returned", len(rows or []), 2)
         eq("the API was called once per page, no more", calls["api"], 2)
         eq("the sidecar calls it complete", (meta or {}).get("status"), "complete")
         eq("the sidecar carries the number of products the category pages "
            "through, not the site's variant count",
-           (meta or {}).get("total_results"), 50)
-        eq("an empty page ends the run as exhausted, not as an error",
+           (meta or {}).get("total_results"), 2)
+        eq("an empty page past the category's own total ends the run as "
+           "exhausted, not as an error",
            (meta or {}).get("stop_reason"), "listing_exhausted")
         eq("both pages count as completed", (meta or {}).get("pages_completed"), 2)
         check("every row says which path produced it",
               all(r["price_source"] == "api" for r in rows or [{}]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Page 1 says 50 products in 5 pages; page 2 answers with no rows —
+        # what a renamed row container looks like. Until this was fixed the
+        # run called that "listing_exhausted" and wrote status=complete.
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(full, 200), (empty, 200)])
+        eq("an empty page INSIDE the category's own total is a partial run, "
+           "exit 6", rc, EXIT_PARTIAL)
+        eq("with the stop reason naming the parser, not the catalogue",
+           (meta or {}).get("stop_reason"), "parser_found_nothing")
+        eq("the sidecar does not call it complete",
+           (meta or {}).get("status"), "partial")
+        eq("and names the page that was lost", (meta or {}).get("pages_failed"), [2])
+
+    nameless = [dict(r, modelName=None) for r in records]
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(
+            tmp, served, [(full, 200), (_api_payload(nameless), 200)])
+        eq("a page whose records all fail to become rows is partial, exit 6",
+           rc, EXIT_PARTIAL)
+        eq("and says the parser lost them",
+           (meta or {}).get("stop_reason"), "parser_found_nothing")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(empty, 200)])
+        eq("page 1 with no rows under a count of 50 is exit 5, not 'empty "
+           "category'", rc, EXIT_NOT_OBTAINED)
+        check("and writes nothing", rows is None and meta is None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(None, 500)], retries=2)
+        eq("an API that fails on every attempt is exit 5, the content was "
+           "never obtained", rc, EXIT_NOT_OBTAINED)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, rows, meta, calls = _run_catalog(tmp, served, [(None, 403)], retries=2)
+        eq("an API that refuses with 403 on every attempt is a block, exit 3",
+           rc, EXIT_BLOCKED)
 
     with tempfile.TemporaryDirectory() as tmp:
         # The same products again on page 2 — pagination looping back on
@@ -2510,7 +2581,10 @@ def check_catalog_client_run():
     with tempfile.TemporaryDirectory() as tmp:
         rc, rows, meta, calls = _run_catalog(tmp, (SHELL_FIXTURE_HTML, 200),
                                              [(full, 200)])
-        eq("a page with no #categoryFilterForm exits 4", rc, EXIT_NO_PRODUCTS)
+        # A changed form is "the content was never obtained", not "the
+        # category is empty" — exit 4 there told a pipeline LG had no
+        # products when it was the page this engine reads that had changed.
+        eq("a page with no #categoryFilterForm exits 5", rc, EXIT_NOT_OBTAINED)
         eq("and no API call is invented from a hardcoded category id",
            calls["api"], 0)
 
@@ -2525,12 +2599,13 @@ def check_catalog_client_run():
            calls["api"], 1 + 3)
 
     with tempfile.TemporaryDirectory() as tmp:
-        # The category page itself never arrived. The family contract maps
-        # "nothing gathered, nothing blocking" to exit 4; what keeps that
-        # honest is the log line and the absence of a sidecar claiming a
-        # successful empty category. Pinned so it cannot drift silently.
+        # The category page itself never arrived. This used to be pinned as
+        # exit 4 ("ran fine, zero products"), which is a claim about the
+        # CATALOGUE that nothing here supports: a pipeline could not tell
+        # "LG had no products" from "the page never loaded". Exit 4 now needs
+        # the site's own "empty"; anything else with no rows is exit 5.
         rc, rows, meta, calls = _run_catalog(tmp, (None, None), [(full, 200)])
-        eq("a category page that never loaded exits 4", rc, EXIT_NO_PRODUCTS)
+        eq("a category page that never loaded exits 5", rc, EXIT_NOT_OBTAINED)
         eq("with no API call attempted", calls["api"], 0)
         check("and no sidecar claiming an empty category", meta is None)
 
@@ -2732,7 +2807,7 @@ def check_only_lg_is_fetched():
     full = _api_payload(json.loads(API_FIXTURE_JSON)["data"][0]["productList"])
     with tempfile.TemporaryDirectory() as tmp:
         rc, rows, meta, calls = _run_catalog(tmp, (evil, 200), [(full, 200)])
-        eq("a page whose form points off-site exits 4", rc, EXIT_NO_PRODUCTS)
+        eq("a page whose form points off-site exits 5", rc, EXIT_NOT_OBTAINED)
         eq("and nothing is POSTed anywhere", calls["api"], 0)
 
     class _Resp:
@@ -3148,7 +3223,7 @@ def check_family_sync_2026_09_29():
                        capture_output=True, text=True)
     check("`env_config.py --help` answers without reading .env",
           r.returncode == 0 and ".env file:" not in r.stdout)
-    # 4. The Scraping Browser connect policy (template §26): retry a lock or
+    # 4. The Scraping Browser connect policy: retry a lock or
     #    an outage, never an expired login, and say which it was.
     eq("a 500 on the upgrade is retried", proxy_pool.cdp_retryable(
         "WebSocket error: ws://***:***@cb.2captcha.com:9222/ 500 Internal Server Error"), True)
@@ -3281,6 +3356,327 @@ def check_supply_chain():
               not missing)
         check(f"{lock} carries hashes", "--hash=sha256:" in open(os.path.join(REPO, lock), encoding="utf-8").read())
 
+# ---------------------------------------------------------------------------
+# The run-outcome contract, output modes, CSV formulas, the solve budget, the
+# credential scan, the Scraper API payload and private references (2026-10-14)
+# ---------------------------------------------------------------------------
+def check_exit_5_when_content_was_never_obtained():
+    """Exit 4 is a claim about the catalogue, so it needs the site's own
+    "empty"; anything else with no rows is exit 5 — including a stop reason
+    nobody has written yet."""
+    print("\n[no rows: empty catalogue (4) or never obtained (5)]")
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = os.path.join(tmp, "out")
+        for reason in ("page_load_timeout", "api_error", "no_catalog_form",
+                       "parser_found_nothing", "page_not_painted", "completed",
+                       "a_reason_added_later"):
+            with redirect_stdout(io.StringIO()):
+                rc = finish_run([], prefix, "json", False, blocked=False,
+                                stop_reason=reason, pages_requested=1,
+                                pages_completed=0, start_url="u", final_url="u")
+            eq(f"zero rows with stop_reason={reason} is exit 5", rc, EXIT_NOT_OBTAINED)
+        for reason in ("no_results", "listing_exhausted", "no_new_products"):
+            with redirect_stdout(io.StringIO()):
+                rc = finish_run([], prefix, "json", False, blocked=False,
+                                stop_reason=reason, pages_requested=1,
+                                pages_completed=1, start_url="u", final_url="u")
+            eq(f"zero rows with stop_reason={reason} is exit 4", rc, EXIT_NO_PRODUCTS)
+        with redirect_stdout(io.StringIO()):
+            rc = finish_run([], prefix, "json", False, blocked=True,
+                            stop_reason="blocked_akamai", pages_requested=1,
+                            pages_completed=0, start_url="u", final_url="u")
+        eq("a block with no rows is still exit 3", rc, EXIT_BLOCKED)
+        with redirect_stdout(io.StringIO()):
+            rc = finish_run([_row(sku="a")], prefix, "json", False, blocked=False,
+                            stop_reason="parser_found_nothing", pages_requested=2,
+                            pages_completed=1, start_url="u", final_url="u")
+        eq("rows and then a parser failure is exit 6", rc, EXIT_PARTIAL)
+
+
+def check_zero_rows_never_end_a_run_as_complete():
+    """A served page that is not the site's own "nothing here" and yields no
+    rows used to stop the run as listing_exhausted — complete, exit 0."""
+    print("\n[a page that yielded nothing is not the end of the listing]")
+    unpainted = page_flow.PageState(page_flow.UNPAINTED, "shell")
+    content = page_flow.PageState(page_flow.CONTENT, "12 cards")
+    eq("an unpainted page names itself", page_flow.zero_rows_reason(unpainted),
+       "page_not_painted")
+    eq("a page with cards and no rows names the parser",
+       page_flow.zero_rows_reason(content), "parser_found_nothing")
+    check("neither reason counts as complete",
+          not {"page_not_painted", "parser_found_nothing"}
+          & set(output_writer.COMPLETE_STOP_REASONS))
+    # Read off disk, so the check runs with no browser library installed:
+    # the old shape stopped with "listing_exhausted" whenever a page simply
+    # had no products.
+    for name in ("playwright_scraper.py", "puppeteer_scraper.py",
+                 "selenium_scraper.py", "scraper_api_client.py"):
+        src = open(os.path.join(REPO, name), encoding="utf-8").read()
+        check(f"{name}: an empty page is never folded into 'listing_exhausted'",
+              not re.search(r"complete(?:_here)?\s+or\s+not\s+\w+(?:\.products)?:", src))
+        check(f"{name}: a page that yielded no rows stops with zero_rows_reason",
+              "page_flow.zero_rows_reason(" in src)
+
+    import scraper_api_client as sac
+    served = page_flow.classify(PAGE_FIXTURE_HTML, url="u", page_num=1)
+    lost = page_flow.PageState(page_flow.CONTENT, "cards, none parsed")
+    answers = {1: (served, parse_products(PAGE_FIXTURE_HTML,
+                                          "https://www.lg.com/ru/televisions",
+                                          page=1)),
+               2: (lost, [])}
+    real = sac._fetch_page
+    with tempfile.TemporaryDirectory() as tmp:
+        args = SimpleNamespace(url="https://www.lg.com/ru/televisions", pages=3,
+                               delay=0, out=os.path.join(tmp, "sapi"),
+                               format="json", allow_empty=False)
+        sac._fetch_page = lambda a, n, u: answers[n]
+        try:
+            with redirect_stdout(io.StringIO()):
+                rc = sac.scrape(args)
+        finally:
+            sac._fetch_page = real
+        meta = _meta(args.out)
+    eq("Scraper API: page 2 served with no rows is a partial run, exit 6",
+       rc, EXIT_PARTIAL)
+    eq("with the stop reason naming the parser",
+       (meta or {}).get("stop_reason"), "parser_found_nothing")
+    eq("and page 2 listed as failed", (meta or {}).get("pages_failed"), [2])
+
+
+def check_output_file_modes():
+    """mkstemp creates at 0600 and os.replace keeps it, so every output was
+    readable by its owner only, and a rewrite narrowed a shared 0664 file."""
+    print("\n[output file modes]")
+    old = os.umask(0o022)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for umask, want in ((0o022, 0o644), (0o002, 0o664), (0o077, 0o600)):
+                os.umask(umask)
+                prefix = os.path.join(tmp, f"m{umask:o}")
+                with redirect_stdout(io.StringIO()):
+                    finish_run([_row(sku="a")], prefix, "both", False,
+                               blocked=False, stop_reason="listing_exhausted",
+                               pages_requested=1, pages_completed=1,
+                               start_url="u", final_url="u")
+                for ext in (".json", ".csv", ".meta.json"):
+                    eq(f"under umask {umask:03o} a new {ext} is {want:o}",
+                       os.stat(prefix + ext).st_mode & 0o777, want)
+            os.umask(0o022)
+            path = os.path.join(tmp, "shared.json")
+            open(path, "w").close()
+            os.chmod(path, 0o664)
+            output_writer.write_json([_row(sku="a")], path)
+            eq("an existing file keeps its own mode on rewrite",
+               os.stat(path).st_mode & 0o777, 0o664)
+    finally:
+        os.umask(old)
+
+
+def check_csv_formulas_are_neutralised():
+    print("\n[CSV formula cells]")
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = os.path.join(tmp, "f")
+        rows = [_row(sku="=1+1", title='=HYPERLINK("http://x")', price=-5.0),
+                _row(sku="b", title="@SUM(A1)", category="\tcmd"),
+                _row(sku="c", title="OLED 55")]
+        with redirect_stdout(io.StringIO()):
+            finish_run(rows, prefix, "both", False, blocked=False,
+                       stop_reason="listing_exhausted", pages_requested=1,
+                       pages_completed=1, start_url="u", final_url="u")
+        with open(prefix + ".csv", encoding="utf-8", newline="") as f:
+            cells = list(csv.DictReader(f))
+        eq("a formula-shaped title gets a leading apostrophe in the CSV",
+           cells[0]["title"], "'" + '=HYPERLINK("http://x")')
+        eq("so does an id", cells[0]["sku"], "'=1+1")
+        eq("and a leading tab", cells[1]["category"], "'\tcmd")
+        eq("a negative NUMBER is left a number", cells[0]["price"], "-5.0")
+        eq("an ordinary string is untouched", cells[2]["title"], "OLED 55")
+        data = json.load(open(prefix + ".json", encoding="utf-8"))
+        eq("the JSON output keeps the site's bytes", data[0]["title"],
+           '=HYPERLINK("http://x")')
+        meta = _meta(prefix)
+        eq("the sidecar counts the escaped cells",
+           (meta or {}).get("csv_cells_escaped"), 4)
+        eq("and keeps the run's own keys", (meta or {}).get("status"), "complete")
+
+
+def _function_source(src, name):
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.get_source_segment(src, node) or ""
+    return ""
+
+
+def check_every_solve_goes_through_the_page_budget():
+    """Every block retry called the solver again, so a page retried from
+    three exits bought three solves. Read off disk: an import-gated version
+    of this check skipped for exactly the engines whose driver was absent."""
+    print("\n[the per-page solve budget]")
+    budget = page_flow.SolveBudget()
+    eq("a page may buy SOLVES_PER_PAGE solves", budget.limit, page_flow.SOLVES_PER_PAGE)
+    spent = [budget.spend() for _ in range(3)]
+    eq("and no more, however often it asks", spent,
+       [True] * page_flow.SOLVES_PER_PAGE + [False] * (3 - page_flow.SOLVES_PER_PAGE))
+    for name in ("playwright_scraper.py", "puppeteer_scraper.py", "selenium_scraper.py"):
+        src = open(os.path.join(REPO, name), encoding="utf-8").read()
+        handler = _function_source(src, "handle_captcha_if_present")
+        fetch = _function_source(src, "_fetch_one_page")
+        # Structurally: an `if not budget.spend(): ... return` that sits
+        # before the first solve() call. A substring search for "spend()"
+        # passed against `if False and not budget.spend():`.
+        guard_line, solve_line = None, None
+        for node in ast.walk(ast.parse(handler or "pass")):
+            if (isinstance(node, ast.If) and isinstance(node.test, ast.UnaryOp)
+                    and isinstance(node.test.op, ast.Not)
+                    and isinstance(node.test.operand, ast.Call)
+                    and getattr(node.test.operand.func, "attr", None) == "spend"
+                    and isinstance(node.body[-1], ast.Return)):
+                guard_line = node.lineno if guard_line is None else min(guard_line, node.lineno)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "solve"):
+                solve_line = node.lineno if solve_line is None else min(solve_line, node.lineno)
+        check(f"{name}: the allowance is checked BEFORE the purchase",
+              guard_line is not None and solve_line is not None
+              and guard_line < solve_line)
+        made = fetch.find("page_flow.SolveBudget()")
+        loop = fetch.find("for block_attempt in range(")
+        check(f"{name}: one allowance per page, made before the block-retry "
+              f"loop and so never reset by a rotation", 0 <= made < loop)
+        calls = re.findall(r"handle_captcha_if_present\(([^)]*)\)", src)
+        calls = [c for c in calls if not c.startswith(("page, args", "driver, args"))]
+        check(f"{name}: every solve call site passes the page's allowance "
+              f"({len(calls)} found)", calls and all("budget" in c for c in calls))
+
+
+def check_credential_scan_judges_paths_inside_the_repo():
+    """A clone under a directory called venv or captures scanned 0 files and
+    printed 'nothing credential-shaped'."""
+    print("\n[the credential scan, from awkward clone locations]")
+    script = os.path.join(REPO, ".github", "ci_checks.py")
+    if not os.path.exists(script):
+        # The Docker image carries no .github on purpose (see Dockerfile).
+        skip("the credential scan from awkward locations", ".github not in this tree")
+        return
+    key = "a1b2c3d4" * 4
+    with tempfile.TemporaryDirectory() as tmp:
+        for ancestor in ("venv", "captures"):
+            root = os.path.join(tmp, ancestor, "lg-scraper")
+            os.makedirs(os.path.join(root, ".github"))
+            shutil.copy(script, os.path.join(root, ".github", "ci_checks.py"))
+            with open(os.path.join(root, "planted.py"), "w") as f:
+                f.write(f"KEY = '{key}'\n")
+            r = subprocess.run([sys.executable, os.path.join(root, ".github", "ci_checks.py"),
+                                "--secret-check"], capture_output=True, text=True)
+            check(f"a key planted in a clone under {ancestor}/ is caught",
+                  r.returncode != 0 and "planted.py" in r.stdout + r.stderr)
+        root = os.path.join(tmp, "plain", "lg-scraper")
+        os.makedirs(os.path.join(root, ".github"))
+        shutil.copy(script, os.path.join(root, ".github", "ci_checks.py"))
+        with open(os.path.join(root, ".env.bak"), "w") as f:
+            f.write(f"TWOCAPTCHA_KEY={key}\n")
+        r = subprocess.run([sys.executable, os.path.join(root, ".github", "ci_checks.py"),
+                            "--secret-check"], capture_output=True, text=True)
+        check("a key in an untracked .env.bak is caught",
+              r.returncode != 0 and ".env.bak" in r.stdout + r.stderr)
+
+
+def check_scraper_api_payload_and_logging():
+    """waitFor as a JSON string is refused with a billed 422; the target's
+    status is http_code; x-debug was logged with a CDP password in it."""
+    print("\n[the Scraper API request and its log]")
+    import requests
+    import scraper_api_client as sac
+    sent = []
+    secret = "S3CRETPASS"
+
+    # Assembled, so the repository's own credential scan does not read this
+    # line as a committed credentialled URL.
+    endpoint = "ws://" + "user:" + secret + "@cb.example:9222"
+
+    def fake_post(url, **kwargs):
+        sent.append(kwargs.get("json") or {})
+        debug = json.dumps({"cost": 0.0005, "cdpurl": endpoint,
+                            "password": secret})
+        return _FakeResponse(
+            {"status": "warn", "http_code": 403, "body": "<html></html>"},
+            headers={"x-debug": debug})
+    args = SimpleNamespace(url="https://www.lg.com/ru/televisions", key="k",
+                           timeout=60, cdp_url=None, wait_text="OLED",
+                           wait_element=None, wait_state=None)
+    real = requests.post
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    sac.logger.addHandler(handler)
+    old_level = sac.logger.level
+    sac.logger.setLevel(logging.INFO)
+    requests.post = fake_post
+    try:
+        html, status = sac.fetch_html(args, args.url)
+    finally:
+        requests.post = real
+        sac.logger.removeHandler(handler)
+        sac.logger.setLevel(old_level)
+    eq("waitFor is sent as an OBJECT", type(sent[0].get("waitFor")).__name__, "dict")
+    eq("the target status is read from http_code, not the API's verdict",
+       status, 403)
+    log = stream.getvalue()
+    check("x-debug is still logged (it carries the cost)", "x-debug" in log and "0.0005" in log)
+    check("but never with a password in it", secret not in log)
+
+
+def check_api_positions_count_emitted_rows():
+    print("\n[position counts the rows emitted]")
+    records = json.loads(API_FIXTURE_JSON)["data"][0]["productList"]
+    payload = _api_payload([dict(records[0], modelName=None)] + records)
+    rows = product_parser.rows_from_api(payload, "https://www.lg.com/ru/televisions", page=1)
+    eq("a skipped record leaves no gap in position",
+       [r.position for r in rows], list(range(1, len(rows) + 1)))
+
+
+def check_catalog_engine_refuses_per_page_rotation():
+    print("\n[catalog_client refuses a rotation it cannot honour]")
+    r = subprocess.run([sys.executable, os.path.join(REPO, "catalog_client.py"),
+                        "--url", "https://www.lg.com/ru/televisions",
+                        "--proxy-rotate", "per-page"],
+                       capture_output=True, text=True, cwd=REPO,
+                       env={**os.environ, "LG_URL": ""})
+    check("--proxy-rotate per-page is a usage error, not a silent no-op",
+          r.returncode == 2 and "--proxy-rotate" in r.stderr and "error:" in r.stderr)
+
+
+def check_no_private_references():
+    """Shipped files once pointed readers at section numbers of a document
+    they cannot open. Say the rule here instead. The tokens are assembled
+    from pieces so this file does not match itself."""
+    print("\n[no references to private documents]")
+    tokens = ["CLAUDE" + ".md", "claude" + "_2scraper", "2scraper" + "_repo_rules",
+              "play" + "book " + "§", "template " + "§"]
+    section = re.compile("§" + r"\s*\d")
+    scanned, hits = 0, []
+    for root, dirs, files in os.walk(REPO):
+        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", "captures",
+                                                 "legacy", ".venv", "venv"}
+                   and not os.path.exists(os.path.join(root, d, "pyvenv.cfg"))]
+        for filename in files:
+            if not filename.endswith((".py", ".md", ".yml", ".yaml", ".txt",
+                                      ".example", ".toml", ".cfg")) \
+                    and filename not in (".gitignore", ".dockerignore", "Dockerfile"):
+                continue
+            path = os.path.join(root, filename)
+            text = open(path, encoding="utf-8", errors="replace").read()
+            scanned += 1
+            rel = os.path.relpath(path, REPO)
+            for token in tokens:
+                if token.lower() in text.lower():
+                    hits.append(f"{rel}: {token!r}")
+            for m in section.finditer(text):
+                hits.append(f"{rel}:{text[:m.start()].count(chr(10)) + 1}: section reference")
+    check(f"no shipped file cites a private document or its sections "
+          f"({scanned} files scanned)" + (f" — {hits[:5]}" if hits else ""),
+          scanned > 10 and not hits)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.ERROR)
     print("lg-scraper offline suite")
@@ -3318,7 +3714,16 @@ def main() -> int:
                   check_captcha_javascript_actually_runs,
                   check_recaptcha_version_from_markup,
                   check_fingerprint_refusal_is_an_api_error,
-                  check_family_sync_2026_09_29, check_supply_chain):
+                  check_family_sync_2026_09_29, check_supply_chain,
+                  check_exit_5_when_content_was_never_obtained,
+                  check_zero_rows_never_end_a_run_as_complete,
+                  check_output_file_modes, check_csv_formulas_are_neutralised,
+                  check_every_solve_goes_through_the_page_budget,
+                  check_credential_scan_judges_paths_inside_the_repo,
+                  check_scraper_api_payload_and_logging,
+                  check_api_positions_count_emitted_rows,
+                  check_catalog_engine_refuses_per_page_rotation,
+                  check_no_private_references):
         group()
 
     print("\n" + "=" * 62)

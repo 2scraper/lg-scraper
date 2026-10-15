@@ -54,7 +54,7 @@ from product_parser import (api_endpoint_reason, api_page_count, api_products,
                             not_an_lg_url_reason, page_url,
                             parse_catalog_form, rows_from_api,
                             unsupported_locale_reason)
-from proxy_pool import (ROTATE_MODES, ProxyError, check_exit_or_raise,
+from proxy_pool import (ProxyError, check_exit_or_raise,
                         from_args as proxy_pool_from_args, mask,
                         redact_secret_patterns)
 
@@ -151,7 +151,16 @@ def scrape(args) -> int:
     check_exit_or_raise(pool, args.url)
     session = _session(pool)
 
-    html, status = fetch_category_page(session, args.url, args.timeout)
+    html, status = None, None
+    for attempt in range(1, args.retries + 1):
+        html, status = fetch_category_page(session, args.url, args.timeout)
+        if html is not None:
+            break
+        if attempt < args.retries:
+            pause = args.retry_delay * (2 ** (attempt - 1))
+            logger.warning("The category page did not load (attempt %d/%d) — "
+                           "retrying in %.1fs.", attempt, args.retries, pause)
+            time.sleep(pause)
     if html is None:
         return finish_run([], args.out, args.format, args.allow_empty,
                           blocked=False, stop_reason="page_load_timeout",
@@ -177,7 +186,10 @@ def scrape(args) -> int:
                      "listing, or the site has changed the form this engine "
                      "reads its parameters from — use a browser engine "
                      "meanwhile, they read the rendered grid.")
-        return 4
+        return finish_run([], args.out, args.format, args.allow_empty,
+                          blocked=False, stop_reason="no_catalog_form",
+                          pages_requested=args.pages, pages_completed=0,
+                          start_url=args.url, final_url=args.url)
     reason = api_endpoint_reason(form["url"], args.url)
     if reason:
         _dump(args, 1, html)
@@ -186,7 +198,10 @@ def scrape(args) -> int:
                      "always lived under the page's own /mkt/ajax/ — a form "
                      "pointing anywhere else is not one to follow.",
                      form["url"], reason)
-        return 4
+        return finish_run([], args.out, args.format, args.allow_empty,
+                          blocked=False, stop_reason="api_endpoint_refused",
+                          pages_requested=args.pages, pages_completed=0,
+                          start_url=args.url, final_url=args.url)
     currency = declared_currency(html)
     logger.info("Catalogue %s via %s (currency declared: %s)",
                 form["params"].get("categoryId"), form["url"], currency or "none")
@@ -198,6 +213,7 @@ def scrape(args) -> int:
     stop_reason = "completed"
     pages_completed = 0
     pages_failed: List[int] = []
+    blocked = False
 
     for page_num in range(1, args.pages + 1):
         if page_count is not None and page_num > page_count:
@@ -223,7 +239,17 @@ def scrape(args) -> int:
                 time.sleep(pause)
         if payload is None:
             pages_failed.append(page_num)
-            stop_reason = "api_error"
+            # A refusal status is a block (exit 3 with nothing gathered), not
+            # an API fault: it wants a different exit, not a bug report.
+            refused = page_flow.classify("", status_code=api_status,
+                                         url=args.url, page_num=page_num)
+            if refused.policy.blocked:
+                logger.error("The catalogue API refused page %d (%s).",
+                             page_num, refused.reason)
+                stop_reason = f"blocked_{refused.vendor}"
+                blocked = True
+            else:
+                stop_reason = "api_error"
             break
 
         records = api_products(payload)
@@ -255,6 +281,7 @@ def scrape(args) -> int:
                          page_num, state.reason)
             pages_failed.append(page_num)
             stop_reason = f"blocked_{state.vendor}"
+            blocked = True
             break
         if args.dump_html:
             path = (args.dump_html if args.pages == 1
@@ -262,6 +289,15 @@ def scrape(args) -> int:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=1)
             logger.info("Saved the exact API response to %s.", path)
+
+        if state.state == page_flow.PARSE_FAILED:
+            logger.error("Page %d: %s. That is a changed response shape or a "
+                         "parser fault, not the end of the category — the run "
+                         "stops here and is NOT reported as complete.",
+                         page_num, state.reason)
+            pages_failed.append(page_num)
+            stop_reason = "parser_found_nothing"
+            break
 
         if state.policy.complete:
             stop_reason = ("no_results" if state.state == page_flow.EMPTY
@@ -274,6 +310,15 @@ def scrape(args) -> int:
         short = page_flow.shortfall(total_results, page_num, len(rows))
         if short:
             logger.warning("%s.", short)
+        if records and not rows:
+            # The API returned records and every one was dropped (no
+            # modelName, say): the page was served and not read.
+            logger.error("Page %d: the catalogue API returned %d record(s) "
+                         "and none of them became a row — stopping, and NOT "
+                         "reporting the run as complete.", page_num, len(records))
+            pages_failed.append(page_num)
+            stop_reason = "parser_found_nothing"
+            break
 
         fresh = [r for r in rows if r.sku is None or r.sku not in seen]
         seen.update(r.sku for r in rows if r.sku)
@@ -294,7 +339,7 @@ def scrape(args) -> int:
         merged.extend(dedupe_by_sku([row], merged_seen))
 
     return finish_run(merged, args.out, args.format, args.allow_empty,
-                      blocked=False, stop_reason=stop_reason,
+                      blocked=blocked, stop_reason=stop_reason,
                       pages_requested=args.pages, pages_completed=pages_completed,
                       pages_failed=pages_failed, total_results=total_results,
                       addressable=True, page_count=page_count,
@@ -335,7 +380,12 @@ def parse_args():
                    help="Proxy URL, e.g. http://ACCOUNT:PASSWORD@HOST:9999")
     p.add_argument("--proxy-file", default=None,
                    help="File with one proxy URL per line. Wins over --proxy.")
-    p.add_argument("--proxy-rotate", choices=list(ROTATE_MODES), default="per-run")
+    # Only per-run: this engine holds one HTTP session for the whole run, so
+    # per-page rotation would be accepted and silently do nothing.
+    p.add_argument("--proxy-rotate", choices=["per-run"], default="per-run",
+                   help="per-run only: this engine keeps one HTTP session for "
+                        "the whole run. Use a browser engine for per-page "
+                        "rotation.")
     p.add_argument("--proxy-shuffle", action="store_true",
                    help="Shuffle the pool at startup.")
     p.add_argument("--allow-empty", action="store_true",

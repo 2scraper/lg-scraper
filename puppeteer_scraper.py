@@ -35,7 +35,7 @@ Usage
 -----
     python3 puppeteer_scraper.py \
         --url "https://www.lg.com/ru/televisions" \
-        --pages 3 --out saas_products
+        --pages 3 --out tv_products
 
 Requires: pip install -r requirements.txt -r requirements-puppeteer.txt
 """
@@ -101,6 +101,15 @@ class PageOutcome:
     def complete_here(self) -> bool:
         return self.state is not None and self.state.policy.complete
 
+    @property
+    def read_nothing(self) -> bool:
+        """Served, not the end of the listing, and still no rows.
+
+        A page the run did not READ — the grid never painted, or the parser
+        lost its products — is never a reason to call the run complete.
+        """
+        return self.ok and not self.complete_here and not self.products
+
 
 _PROXY_ERROR_MARKERS = (
     "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED",
@@ -129,7 +138,7 @@ async def _open_browser(args, pool):
         # its receive loop, the caller sees only a timeout, and the orphaned
         # task prints a traceback AFTER a correct exit. So: a short timeout
         # per attempt, proxy_pool's retry policy, and that one traceback
-        # shape filtered (family template §26).
+        # shape filtered.
         _quiet_refused_handshakes()
         browser = None
         for attempt in range(1, CDP_CONNECT_ATTEMPTS + 1):
@@ -272,11 +281,11 @@ async def _content(page) -> Optional[str]:
         return None
 
 
-async def handle_captcha_if_present(page, args) -> None:
+async def handle_captcha_if_present(page, args, budget) -> bool:
     """Runs after EVERY navigation, for ANY page — not scoped to one URL."""
     html = await _content(page)
     if html is None:
-        return
+        return False
     url = page.url
 
     # pyppeteer's evaluate is a coroutine, so the discovery script is awaited
@@ -293,52 +302,63 @@ async def handle_captcha_if_present(page, args) -> None:
 
     challenge = reconcile_detections(detect_in_html(html, url), runtime)
     if not challenge:
-        return
+        return False
 
     state = page_flow.classify(html, url=url)
     if args.solve_captcha == "when-blocked" and not state.policy.may_solve:
         logger.info("%s detected via %s, but the page is %s — not paying to "
                     "solve it.", challenge.kind, challenge.source, state)
-        return
+        return False
 
     logger.warning("%s detected via %s (sitekey=%s) — attempting to solve.",
                    challenge.kind, challenge.source, challenge.sitekey)
     if not args.twocaptcha_key:
         logger.warning("No 2captcha API key, so this challenge cannot be solved "
                        "— continuing with whatever the page already holds.")
-        return
+        return False
+    if not budget.spend():
+        logger.warning("This page has already used its %d paid solve(s) — not "
+                       "buying another. A retry from another exit is a reason "
+                       "to fetch again, not a fresh allowance.", budget.limit)
+        return False
     try:
         token = solve(challenge, args.twocaptcha_key,
                       api_version=args.captcha_api, min_score=args.min_score)
     except Exception as e:  # noqa: BLE001 — a solver failure is not a crash
         logger.error("Solving the challenge failed (%s) — continuing.",
                      redact_secret_patterns(str(e)))
-        return
+        return False
     await page.evaluate(INJECT_TOKEN_FN, token)
     if state.policy.blocked:
         logger.info("Token injected. Reloading page to continue.")
         await asyncio.sleep(1.5)
         await page.reload({"waitUntil": "domcontentloaded",
                            "timeout": GOTO_TIMEOUT_MS})
+        return True
     else:
         # See the twin: a reload on a page that was not blocked discards the
         # token, and a form's token is only useful at submit time.
         logger.info("Token injected and left in the page's own response field. "
                     "This page was not blocked, so it is NOT reloaded.")
+    return False
 
 
 async def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome:
     outcome = PageOutcome(page_num=page_num, url=url)
     block_retries = args.proxy_block_retries if (pool and len(pool) > 1) else 0
     html, state, load_failed = None, None, False
+    # One solve allowance for this page, shared by every attempt and
+    # every exit it is retried from.
+    budget = page_flow.SolveBudget()
 
     for block_attempt in range(block_retries + 1):
         logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
-        load_failed, exit_failed = False, None
+        load_failed, exit_failed, nav_status = False, None, None
         for attempt in range(1, args.retries + 1):
             try:
-                await session.page.goto(
+                response = await session.page.goto(
                     url, {"waitUntil": "domcontentloaded", "timeout": GOTO_TIMEOUT_MS})
+                nav_status = response.status if response is not None else None
                 load_failed = False
                 break
             except (PPTimeout, PageError, NetworkError,
@@ -375,16 +395,21 @@ async def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageO
         if load_failed:
             break
 
-        await handle_captcha_if_present(session.page, args)
+        if await handle_captcha_if_present(session.page, args, budget):
+            # Reloaded after a solve: the navigation's status describes the
+            # interstitial it replaced, not this document.
+            nav_status = None
         cards = await _wait_for_cards(session.page)
         html = await _content(session.page) or ""
-        state = page_flow.classify(html, url=session.page.url, page_num=page_num)
+        state = page_flow.classify(html, status_code=nav_status,
+                                   url=session.page.url, page_num=page_num)
         logger.info("Page %d is %s (%d card(s) rendered).", page_num, state, cards)
 
         if state.state == page_flow.UNPAINTED and state.policy.wait_first:
             await asyncio.sleep(RENDER_WAIT_MS / 1000.0)
             html = await _content(session.page) or html
-            state = page_flow.classify(html, url=session.page.url, page_num=page_num)
+            state = page_flow.classify(html, status_code=nav_status,
+                                       url=session.page.url, page_num=page_num)
             logger.info("After waiting, page %d is %s.", page_num, state)
 
         if not state.policy.rotate_exit:
@@ -524,6 +549,8 @@ async def _scrape(args) -> int:
         elif first.complete_here:
             stop_reason = ("no_results" if first.state.state == page_flow.EMPTY
                            else "listing_exhausted")
+        elif first.read_nothing:
+            stop_reason = page_flow.zero_rows_reason(first.state)
         elif args.pages > 1:
             seen = {p.sku for p in first.products if p.sku}
             previous = first
@@ -540,8 +567,11 @@ async def _scrape(args) -> int:
                                    else f"blocked_{(outcome.state.vendor if outcome.state else 'unknown')}")
                     blocked = bool(outcome.state and outcome.state.policy.blocked)
                     break
-                if outcome.complete_here or not outcome.products:
+                if outcome.complete_here:
                     stop_reason = "listing_exhausted"
+                    break
+                if outcome.read_nothing:
+                    stop_reason = page_flow.zero_rows_reason(outcome.state)
                     break
                 if page_num == 2:
                     addressable = _addressable(previous, outcome)
@@ -575,8 +605,9 @@ async def _scrape(args) -> int:
                         oc.page_num, len(oc.products) - len(fresh))
         all_products.extend(fresh)
 
-    ok_pages = [o for o in outcomes if o.ok]
-    failed_pages = [o.page_num for o in outcomes if not o.ok]
+    # A page served but not read is a failed page, not a completed one.
+    ok_pages = [o for o in outcomes if o.ok and not o.read_nothing]
+    failed_pages = [o.page_num for o in outcomes if not o.ok or o.read_nothing]
     final_url = (max(ok_pages, key=lambda o: o.page_num).final_url
                  if ok_pages else args.url)
     return finish_run(all_products, args.out, args.format, args.allow_empty,
@@ -602,8 +633,8 @@ def scrape(args) -> int:
 def parse_args():
     p = argparse.ArgumentParser(description="LG catalogue scraper (pyppeteer edition)")
     p.add_argument("--url", default=None,
-                   help="A lg.com listing URL: /search with any filter[...] "
-                        "parameters, or a category shortcut such as /websites. "
+                   help="An lg.com/ru or lg.com/ua category URL, e.g. "
+                        "https://www.lg.com/ru/televisions. "
                         "Required unless LG_URL is set.")
     p.add_argument("--category", default=None,
                    help="Label to tag output rows with. Defaults to what the URL says.")

@@ -571,12 +571,15 @@ def rows_from_api(payload: dict, base_url: str, category: Optional[str] = None,
     column should carry what the site says rather than nothing.
     """
     rows = []
-    for position, record in enumerate(api_products(payload), start=1):
+    for slot, record in enumerate(api_products(payload), start=1):
         if not _clean(record.get("modelName")):
             logger.warning("Skipping an API record with no modelName "
-                           "(position %d).", position)
+                           "(slot %d of the response).", slot)
             continue
-        row = _row_from_api(record, base_url, category, page, position)
+        # `position` counts the rows actually EMITTED, like the rendered-grid
+        # path does: numbering by payload slot would leave a gap wherever a
+        # record is skipped, and the two engines would disagree on it.
+        row = _row_from_api(record, base_url, category, page, len(rows) + 1)
         if row.currency is None:
             row.currency = currency
         rows.append(row)

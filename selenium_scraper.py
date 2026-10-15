@@ -29,7 +29,7 @@ Usage
 -----
     python3 selenium_scraper.py \\
         --url "https://www.lg.com/ru/televisions" \\
-        --pages 3 --out saas_products
+        --pages 3 --out tv_products
 
 Requires: pip install -r requirements.txt -r requirements-selenium.txt
 """
@@ -93,6 +93,15 @@ class PageOutcome:
     @property
     def complete_here(self) -> bool:
         return self.state is not None and self.state.policy.complete
+
+    @property
+    def read_nothing(self) -> bool:
+        """Served, not the end of the listing, and still no rows.
+
+        A page the run did not READ — the grid never painted, or the parser
+        lost its products — is never a reason to call the run complete.
+        """
+        return self.ok and not self.complete_here and not self.products
 
 
 _PROXY_ERROR_MARKERS = (
@@ -210,34 +219,39 @@ def _discover_captcha(driver, url: str):
     return challenge_from_discovery(info, page_url=url)
 
 
-def handle_captcha_if_present(driver, args) -> None:
+def handle_captcha_if_present(driver, args, budget) -> bool:
     """Runs after EVERY navigation, for ANY page — not scoped to one URL."""
     html = driver.page_source
     url = driver.current_url
     challenge = reconcile_detections(detect_in_html(html, url),
                                      _discover_captcha(driver, url))
     if not challenge:
-        return
+        return False
 
     state = page_flow.classify(html, url=url)
     if args.solve_captcha == "when-blocked" and not state.policy.may_solve:
         logger.info("%s detected via %s, but the page is %s — not paying to "
                     "solve it.", challenge.kind, challenge.source, state)
-        return
+        return False
 
     logger.warning("%s detected via %s (sitekey=%s) — attempting to solve.",
                    challenge.kind, challenge.source, challenge.sitekey)
     if not args.twocaptcha_key:
         logger.warning("No 2captcha API key, so this challenge cannot be solved "
                        "— continuing with whatever the page already holds.")
-        return
+        return False
+    if not budget.spend():
+        logger.warning("This page has already used its %d paid solve(s) — not "
+                       "buying another. A retry from another exit is a reason "
+                       "to fetch again, not a fresh allowance.", budget.limit)
+        return False
     try:
         token = solve(challenge, args.twocaptcha_key,
                       api_version=args.captcha_api, min_score=args.min_score)
     except Exception as e:  # noqa: BLE001 — a solver failure is not a crash
         logger.error("Solving the challenge failed (%s) — continuing.",
                      redact_secret_patterns(str(e)))
-        return
+        return False
     # The BODY form, not the arrow function: see captcha_solver's two
     # constants and _discover_captcha above.
     driver.execute_script(INJECT_TOKEN_BODY, token)
@@ -245,11 +259,13 @@ def handle_captcha_if_present(driver, args) -> None:
         logger.info("Token injected. Reloading page to continue.")
         time.sleep(1.5)
         driver.refresh()
+        return True
     else:
         # See the twins: a reload on a page that was not blocked discards the
         # token, and a form's token is only useful at submit time.
         logger.info("Token injected and left in the page's own response field. "
                     "This page was not blocked, so it is NOT reloaded.")
+    return False
 
 
 def _dump_debug(driver, args, page_num: int, html: Optional[str]) -> None:
@@ -267,6 +283,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     outcome = PageOutcome(page_num=page_num, url=url)
     block_retries = args.proxy_block_retries if (pool and len(pool) > 1) else 0
     html, state, load_failed = None, None, False
+    # One solve allowance for this page, shared by every attempt and
+    # every exit it is retried from.
+    budget = page_flow.SolveBudget()
 
     for block_attempt in range(block_retries + 1):
         logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
@@ -308,7 +327,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         if load_failed:
             break
 
-        handle_captcha_if_present(session.driver, args)
+        # Selenium exposes no HTTP status, so the classifier works from the
+        # document alone here.
+        handle_captcha_if_present(session.driver, args, budget)
         cards = _wait_for_cards(session.driver)
         html = session.driver.page_source
         state = page_flow.classify(html, url=session.driver.current_url, page_num=page_num)
@@ -412,6 +433,8 @@ def scrape(args) -> int:
         elif first.complete_here:
             stop_reason = ("no_results" if first.state.state == page_flow.EMPTY
                            else "listing_exhausted")
+        elif first.read_nothing:
+            stop_reason = page_flow.zero_rows_reason(first.state)
         elif args.pages > 1:
             seen = {p.sku for p in first.products if p.sku}
             previous = first
@@ -428,8 +451,11 @@ def scrape(args) -> int:
                                    else f"blocked_{(outcome.state.vendor if outcome.state else 'unknown')}")
                     blocked = bool(outcome.state and outcome.state.policy.blocked)
                     break
-                if outcome.complete_here or not outcome.products:
+                if outcome.complete_here:
                     stop_reason = "listing_exhausted"
+                    break
+                if outcome.read_nothing:
+                    stop_reason = page_flow.zero_rows_reason(outcome.state)
                     break
                 if page_num == 2:
                     addressable = _addressable(previous, outcome)
@@ -463,8 +489,9 @@ def scrape(args) -> int:
                         oc.page_num, len(oc.products) - len(fresh))
         all_products.extend(fresh)
 
-    ok_pages = [o for o in outcomes if o.ok]
-    failed_pages = [o.page_num for o in outcomes if not o.ok]
+    # A page served but not read is a failed page, not a completed one.
+    ok_pages = [o for o in outcomes if o.ok and not o.read_nothing]
+    failed_pages = [o.page_num for o in outcomes if not o.ok or o.read_nothing]
     final_url = (max(ok_pages, key=lambda o: o.page_num).final_url
                  if ok_pages else args.url)
     return finish_run(all_products, args.out, args.format, args.allow_empty,
@@ -478,8 +505,8 @@ def scrape(args) -> int:
 def parse_args():
     p = argparse.ArgumentParser(description="LG catalogue scraper (Selenium edition)")
     p.add_argument("--url", default=None,
-                   help="A lg.com listing URL: /search with any filter[...] "
-                        "parameters, or a category shortcut such as /websites. "
+                   help="An lg.com/ru or lg.com/ua category URL, e.g. "
+                        "https://www.lg.com/ru/televisions. "
                         "Required unless LG_URL is set.")
     p.add_argument("--category", default=None,
                    help="Label to tag output rows with. Defaults to what the URL says.")

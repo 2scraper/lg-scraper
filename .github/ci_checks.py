@@ -98,8 +98,8 @@ _VENV_CACHE = {}
 def _is_in_virtualenv(path):
     """True if any ancestor of `path` under REPO is a virtualenv root.
 
-    A directory holding `pyvenv.cfg` IS a virtualenv, whatever it is called
-    (family template §23). The name set in SKIP_DIRS missed CI's own
+    A directory holding `pyvenv.cfg` IS a virtualenv, whatever it is called.
+    The name set in SKIP_DIRS missed CI's own
     `.venv-<engine>`, so the engine jobs scanned pip's and selenium's vendored
     code and failed on it — hidden until pipefail made that job's exit status
     real (2026-09-29).
@@ -117,9 +117,17 @@ def _is_in_virtualenv(path):
 
 def scanned_files():
     for path in sorted(REPO.rglob("*")):
-        if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
+        if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        # A working copy of .env renamed the way people rename them
+        # (.env.bak, .env.local) is exactly where a live key sits untracked,
+        # and its suffix is none of the ones below.
+        if path.suffix not in SCANNED_SUFFIXES and not path.name.startswith(".env"):
+            continue
+        # Judged on the path INSIDE the repo. `path.parts` holds every
+        # ancestor too, so a clone under a directory called `venv` or
+        # `captures` used to skip every file and report "nothing found".
+        if any(part in SKIP_DIRS for part in path.relative_to(REPO).parts):
             continue
         if _is_in_virtualenv(path):
             continue
@@ -212,6 +220,10 @@ def secret_check():
                 line_no = text[:match.start()].count("\n") + 1
                 failed.append(f"{rel}:{line_no} contains {what}")
 
+    if scanned == 0:
+        # A scan that read nothing passes for the wrong reason.
+        failed.append("the credential scan read 0 files — the exclusions "
+                      "matched the whole repository")
     if not failed:
         print(f"ok       {scanned} files scanned, nothing credential-shaped, "
               f"no session material, no personal data")

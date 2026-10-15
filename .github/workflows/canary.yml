@@ -23,10 +23,10 @@ on:
 jobs:
   live-run:
     runs-on: ubuntu-latest
-    # `secrets` is not available in a job-level `if`, so presence is tested
-    # through job env and read in each step's `if`.
-    env:
-      HAS_PROXY: ${{ secrets.LG_PROXY != '' }}
+    # No secret is needed: the catalogue API serves a bare GitHub runner (green
+    # daily from 2026-09-21 to 2026-10-14 with 48-50 real rows each run). So
+    # every outcome other than real rows is RED — a block included, because a
+    # canary that goes green on a block is not testing the site.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -67,15 +67,10 @@ jobs:
           code="${{ steps.run.outputs.exit_code }}"
           case "$code" in
             0) echo "OK — listings parsed from a live run." ;;
-            3) if [ "${{ env.HAS_PROXY }}" = "true" ]; then
-                 echo "::error::Blocked before parsing (exit 3) even through the configured proxy — this looks like a site-side change."
-                 exit 1
-               else
-                 echo "::notice::Blocked before parsing (exit 3) from a bare GitHub runner, which is a datacentre address. lg.com served this URL from an ordinary connection on 2026-09-19, so this is more likely the runner's IP than a site change. Set the LG_PROXY secret to check it properly."
-                 exit 0
-               fi ;;
-            4) echo "::error::Ran fine but parsed 0 listings (exit 4) on a URL known to have hundreds — this is the shape a real site-side break takes." ; exit 1 ;;
-            6) echo "::error::Partial run (exit 6) — see the sidecar's stop_reason. 'api_error' means the catalogue API stopped answering; pages_failed says on which page." ; exit 1 ;;
+            3) echo "::error::Blocked before parsing (exit 3). This path served bare GitHub runners every day until now, so either the runner's address range is now refused or the site changed. An optional LG_PROXY secret routes the run through a proxy." ; exit 1 ;;
+            4) echo "::error::The site reported the category empty (exit 4) on a URL known to hold ~50 products — this is the shape a real site-side break takes." ; exit 1 ;;
+            5) echo "::error::No rows and the content was never obtained (exit 5) — see the log: the category page or the catalogue API did not answer, the page carried no catalogue form, or a page the API said holds products parsed to none (stop_reason in the log)." ; exit 1 ;;
+            6) echo "::error::Partial run (exit 6) — see the sidecar's stop_reason. 'api_error' means the catalogue API stopped answering; 'parser_found_nothing' means a page inside the category's own total came back with no rows; pages_failed says on which page." ; exit 1 ;;
             *) echo "::error::Unexpected exit code $code (see the step above)." ; exit 1 ;;
           esac
 

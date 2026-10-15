@@ -42,10 +42,13 @@ jobs:
           done
 
       - name: Audit the pyppeteer lock, minus its known urllib3 1.x advisories
-        # pyppeteer requires urllib3<2, and these five are fixed only in 2.x
-        # (measured 2026-09-25 against urllib3 1.26.20), so they cannot be
-        # cleared while the pyppeteer engine exists. They are ignored BY ID,
-        # not by package: any NEW advisory in this lock still fails the job.
+        # pyppeteer requires urllib3<2, and these are fixed only in 2.x
+        # (measured 2026-09-25 against urllib3 1.26.20 for the first five;
+        # PYSEC-2026-4175 and -4177 were published later, fixed in 2.8.0,
+        # and turned this job red from 2026-10-05). pyppeteer 2.0.0 still
+        # declares urllib3>=1.25.8,<2.0.0, so no compatible pin clears them
+        # while the pyppeteer engine exists. They are ignored BY ID, not by
+        # package: any NEW advisory in this lock still fails the job.
         # README says what this means for someone running that engine.
         run: |
           pip-audit --progress-spinner off --require-hashes --disable-pip \
@@ -54,4 +57,6 @@ jobs:
             --ignore-vuln PYSEC-2026-1994 \
             --ignore-vuln PYSEC-2026-1996 \
             --ignore-vuln PYSEC-2026-1998 \
-            --ignore-vuln PYSEC-2026-1999
+            --ignore-vuln PYSEC-2026-1999 \
+            --ignore-vuln PYSEC-2026-4175 \
+            --ignore-vuln PYSEC-2026-4177
