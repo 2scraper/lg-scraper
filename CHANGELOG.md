@@ -7,6 +7,8 @@ means fixes, not that every flag is frozen.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-15
+
 > **Behaviour changes.**
 > - **Exit 5 now means "no rows, and the content was never obtained".** A
 >   category page that never loaded, a catalogue API that failed on every
