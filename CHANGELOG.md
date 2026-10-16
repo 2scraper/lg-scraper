@@ -7,6 +7,12 @@ means fixes, not that every flag is frozen.
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the canary's optional paid secret `LG_PROXY` now reaches it only on a new weekly
+  run (Mondays 06:23 UTC) and on a manual dispatch. The daily run keeps its
+  schedule and takes the free route without them, so it bills nothing.
+
 ## [0.3.0] — 2026-10-15
 
 > **Behaviour changes.**

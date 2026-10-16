@@ -18,6 +18,10 @@ on:
     # Off the hour, so it is not competing with every other cron job for
     # runner availability.
     - cron: "23 6 * * *"
+    # Mondays: the same jobs, WITH the paid secrets (proxy, Scraping Browser,
+    # captcha key). On the daily run above those secrets read as empty, so
+    # it takes the free no-secret route and bills nothing.
+    - cron: "23 6 * * 1"
   workflow_dispatch:
 
 jobs:
@@ -54,7 +58,7 @@ jobs:
         # failing the job, not the shell's errexit.
         continue-on-error: true
         env:
-          LG_PROXY: ${{ secrets.LG_PROXY }}
+          LG_PROXY: ${{ (github.event_name != 'schedule' || github.event.schedule == '23 6 * * 1') && secrets.LG_PROXY || '' }}
         run: |
           set +e
           python3 catalog_client.py \
