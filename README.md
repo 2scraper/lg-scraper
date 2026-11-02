@@ -1,4 +1,4 @@
-# lg-scraper
+# LG Scraper — Model Codes, Sizes and Years in Python
 
 [![release](https://img.shields.io/github/v/release/2scraper/lg-scraper?label=release)](https://github.com/2scraper/lg-scraper/releases)
 [![tests](https://github.com/2scraper/lg-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/lg-scraper/actions/workflows/tests.yml)
@@ -7,6 +7,8 @@
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-catalogue--api%20%7C%20playwright%20%7C%20pyppeteer%20%7C%20selenium-lightgrey)](#five-ways-to-run-it)
 [![runs without an account](https://img.shields.io/badge/runs%20without%20an%20account-yes-brightgreen)](#what-the-paid-products-buy-you)
+
+**LG scraper** — an open-source (MIT) Python tool that reads lg.com category pages on the `/ru` and `/ua` platforms and writes model codes, product names, screen sizes, model year and category to JSON or CSV. On 2026-09-21 its primary path, the site's own catalogue API, returned rows with no browser and no key. Use it to build a dataset of LG's catalogue, or compare two runs with `diff_runs.py`.
 
 A working scraper for **lg.com** category pages — televisions, refrigerators,
 washing machines, monitors, audio, anything with a product grid. No category
@@ -299,6 +301,23 @@ with the failing page named in the sidecar), a category page that never
 loaded, a `--pages` sample of a longer category (`limited`, and refused by
 `diff_runs.py`), and a page whose form points the POST anywhere but its own
 `https://…lg.com/{locale}/mkt/ajax/`.
+
+## Guides
+
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [Lidl US scraper](https://github.com/2scraper/lidl-scraper) — Grocery prices, unit prices and pack sizes from lidl.com…
+- [MediaMarkt scraper](https://github.com/2scraper/mediamarkt-scraper) — Category grids, search results and product pages from ten…
+- [Montblanc scraper](https://github.com/2scraper/montblanc-scraper) — Per-market prices, stock, collections and full variant…
+- [Pottery Barn scraper](https://github.com/2scraper/potterybarn-scraper) — Every product in a Pottery Barn category, and every SKU's…
+- [Rakuten Ichiba scraper](https://github.com/2scraper/rakuten-scraper) — Japan's largest marketplace
+- [SHEIN scraper](https://github.com/2scraper/shein-scraper) — us.shein.com search, category and product pages…
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
 
 ## Licence
 
