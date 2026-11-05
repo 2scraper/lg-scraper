@@ -9,6 +9,7 @@ means fixes, not that every flag is frozen.
 
 ### Changed
 
+- Dependencies: `certifi` 2026.7.22 -> 2026.10.23 in every lock (PYSEC-2026-4320, fixed in 2026.10.18). In the CI tooling lock only, `filelock` 4.0.3 -> 4.2.9 on Python 3.11+ (4.1.0 on 3.10, the newest release that supports it) and `msgpack` 1.2.2 -> 1.2.4, both dependencies of `pip-audit`. No other pins moved.
 - CI only: the canary now runs weekly (Mondays 06:23 UTC) and on a manual dispatch, with its optional secret `LG_PROXY` passed on every run; the daily schedule is removed.
 
 ## [0.3.0] — 2026-10-15
